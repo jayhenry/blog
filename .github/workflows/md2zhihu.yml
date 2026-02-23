@@ -25,6 +25,7 @@ jobs:
     - name: Run md2zhihu
       run: |
         export PATH="$PWD/node_modules/.bin:$PATH"
+        echo 'asset repo: https://${{ secrets.GITEE_PUSH_REPO }}@gitee.com/henryzhao28/blog.git@${{ github.ref_name }}-md2zhihu-asset'
         md2zhihu \
           --repo 'https://${{ secrets.GITEE_PUSH_REPO }}@gitee.com/henryzhao28/blog.git@${{ github.ref_name }}-md2zhihu-asset' \
           --code-width 600 \
