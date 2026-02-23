@@ -5,13 +5,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: drmingdrmer/md2zhihu@main
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyYAML k3color k3down2 k3fs k3git k3handy typing_extensions urllib3
+    - name: Install md2zhihu
+      run: |
+        pip install git+https://github.com/drmingdrmer/md2zhihu.git@main
+    - name: Install mermaid
+      run: npm install @mermaid-js/mermaid-cli@10.2.2
+    - name: Install pandoc and graphviz
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pandoc graphviz
+    - name: Run md2zhihu
+      run: |
+        export PATH="$PWD/node_modules/.bin:$PATH"
+        md2zhihu \
+          --repo 'https://${{ secrets.GITEE_PUSH_REPO }}@gitee.com/henryzhao28/blog.git@${{ github.ref_name }}-md2zhihu-asset' \
+          --code-width 600 \
+          --platform zhihu \
+          --md-output _md2zhihu/ \
+          articles/**/*.md
+    - name: Commit and push results
+      run: |
+        if [ -d "_md2zhihu" ] && [ "$(ls -A _md2zhihu)" ]; then
+          git add _md2zhihu
+          if git diff-index --quiet HEAD --; then
+            echo "Nothing to commit"
+          else
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "Convert markdown to zhihu format"
+            git push -f origin HEAD:${{ github.ref_name }}-md2zhihu
+            echo "Results pushed to branch: ${{ github.ref_name }}-md2zhihu"
+          fi
+        else
+          echo "No output files generated"
+        fi
       env:
         GITHUB_USERNAME: ${{ github.repository_owner }}
         GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-      with:
-        pattern: 'articles/**/*.md'
-        output_dir: '_md2zhihu'
-        asset_repo: 'https://${{ secrets.GITEE_PUSH_REPO }}@gitee.com/henryzhao28/blog.git'
-        asset_branch: '${{ github.ref_name }}-md2zhihu-asset'
-        output_branch: '${{ github.ref_name }}-md2zhihu'
