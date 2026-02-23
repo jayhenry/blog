@@ -612,26 +612,6 @@ DeepSeek的DualPipeV的[实现代码](https://github.com/deepseek-ai/DualPipe/bl
         assert WeightGradStore.funcs_queue.empty()
 ```
 
-【存疑】最后，再看一下steady稳态阶段设计的气泡压缩小策略。
-
-前面提到的DualPipe设计的出发点是可以做F前向、B反向的通信计算重叠，来隐藏耗时的ep all to all通信，即下图。并且由于这样做，可以认为前向和反向同时完成，然后各自向下一个stage传输中间结果，即下图中紫色的PP通信部分。
-
-![image.png](image%209.png)
-
-这样将F和B耦合起来的代价是FB整体计算完，才能向下一个stage传输，拖慢了F的进度。这样在warmup和steady交接的阶段，产生了少量的气泡。如下图中的(F1_4, B0_0)计算块。
-
-![image.png](image%2012.png)
-
-而压缩这个气泡的方法也很简单，就是steady阶段的第一个micro batch计算时，解耦F和B的计算，让F尽快完成后传递到下一个阶段。如下图。
-
-![image.png](image%2013.png)
-
-这对应代码实现里的step4 中第1个迭代 i=0的特殊处理。
-
-但是代码中只做了最后1个device上第1个迭代的FB解耦。原因是不需要像图上这么激进，因为瓶颈在 下1个 (F1_5, F0_1) 的FB耦合计算块计算时，仍然要等待。这里只做最后1个device上的特殊处理，来让后续FB耦合计算块稍微提前，来压缩一些通信间隔等小的bubble。
-
-## Interleaved 1F1B
-
 ## 总结
 下表展示了各方法的详细比较，所有方案均基于相同数量的设备（记为d，也是流水线并行度），microbatch个数记为 m。
 
@@ -653,17 +633,11 @@ DeepSeek的DualPipeV的[实现代码](https://github.com/deepseek-ai/DualPipe/bl
 
 对半裁剪方案DualPipeV的 PP 通信量是其他方法的两倍。然而，由于参数内存减少了一半，这种优势弥补了通信开销的增加，因为相较于 EP 通信，PP 通信的开销较小。
 
-
-## 其他计划
- ZB-P1
- ZB-V自动
- ZB-V half（memory）
- ZB-V min (memory)
- Pipe Offload
+1F1B-I 指Megatron提出的Interleaved 1F1B方法，放在最后方便对比。
 
 ## 附录: ZB-V手动
 
-Zero Bubble作者在博客  https://hackmd.io/@ufotalent/S1N_ay0ckx中还提到：如果完全解耦FB的计算，是可以彻底压缩warmup和steady间的bubble的，就如上一节最后图所示
+Zero Bubble作者在[博客](https://hackmd.io/@ufotalent/S1N_ay0ckx)中还提到：如果完全解耦FB的计算，是可以彻底压缩warmup和steady间的bubble的，就如上一节最后图所示
 
 ![image.png](image%2014.png)
 
