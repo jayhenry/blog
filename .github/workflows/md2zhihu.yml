@@ -12,7 +12,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyYAML k3color k3down2 k3fs k3git k3handy typing_extensions urllib3
+        pip install PyYAML k3color k3down2 k3fs k3git k3handy typing_extensions urllib3 pygments
     - name: Install md2zhihu
       run: |
         pip install git+https://github.com/drmingdrmer/md2zhihu.git@main
