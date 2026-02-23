@@ -42,15 +42,15 @@
 
 原来micro batch number=8，假设micro batch向前扩充了4个，向后扩充了6个，变为18个，如下图。
 
-![image.png](image%201.png)
+![image.png](image_1.png)
 
 但是我们只关注 micro id=4~11的8个micro batch，如下。
 
-![image.png](image%202.png)
+![image.png](image_2.png)
 
 然后剔除不属于4~11范围的microbatch
 
-![image.png](image%203.png)
+![image.png](image_3.png)
 
 这样就得到了和图1相同的microbatch=8的调度策略。
 
@@ -182,7 +182,7 @@ def forward_backward_pipelining_without_interleaving():
 
 p(pipeline parallel)=4, m(micro batch number)=8的ZB-H1如下
 
-![image.png](image%204.png)
+![image.png](image_4.png)
 
 ZB-H1稳态阶段的特有规则：
 
@@ -197,7 +197,7 @@ ZB-H1稳态阶段的特有规则：
 
 和前面类似，根据稳态规则扩充到18个microbatch，但只看micro id=4~11的8个micro batch。
 
-![image.png](image%205.png)
+![image.png](image_5.png)
 
 ![ZB-H1-extend.png](ZB-H1-extend.png)
 
@@ -231,7 +231,7 @@ cooldown2阶段：
 
 作者在实现 ZB-H1时，实际是实现了一个上面ZB-H1的变种，见 [代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism/tree/zb-h1-quick-start) 。这个变种尽量不修改整个的(BW)，如下图。好处，一个是可以在Megatron上做更少的修改，另一个是在TP并行同时开启时可以利用Megatron中已经实现的TP反向的通信重叠策略，即 [图解Megatron TP中的计算通信overlap](https://zhuanlan.zhihu.com/p/16594218518) 文章中第4节介绍的重叠策略。
 
-![image.png](image%206.png)
+![image.png](image_6.png)
 
 ### ZB-H1的代码实现
 
@@ -316,7 +316,7 @@ cooldown2的[代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism
 
 ## ZB-H2
 
-![image.png](image%207.png)
+![image.png](image_7.png)
 
 ZB-H2与ZB-H1都做了BW的分离，而他们核心的不同是：在warmup阶段，不受显存的约束，尽可能地调度更多的F，从而减少气泡。实际上可以计算，中间激活值 显存占用约为 1F1B的2倍，即 $2pM_B$，这也是命名H2的原因。
 
@@ -344,14 +344,14 @@ cooldown2阶段：bi ≥ m > wi，
 
 这是一个DualPipe p=8, m=20的例子。
 
-![image.png](image%208.png)
+![image.png](image_8.png)
 
 DualPipe 使用了双向的调度，也就是从流水线的两端（device0 和device p-1）同时喂入micro batch数据，从正向喂入10个micro batch（图中micro id序号0-9黑字），从反向喂入10个micro batch（图中micro id 序号 0-9白字）。
 这个做法要求DualPipe存储两份参数，一份参数从device 0到device p-1分布（这里称为 model chunk0），另一份参数从device p-1到device 0分布（model chunk1）。
 
 这么做的原因是，要组成一个 (F0, B1, F1, B0) 的稳态阶段，在这个阶段中，可以做前向、反向的通信计算重叠，来隐藏耗时的ep all to all通信，示意图如下，来自[deepseek开源的profile](https://github.com/deepseek-ai/profile-data)。但是代价是参数占用显存扩大了一倍。
 
-![image.png](image%209.png)
+![image.png](image_9.png)
 
 由于DualPipe 里 1个GPU(也叫device)上放置2个model chunk。所以有时也说1个物理device被当做了2个virtual device。这两个叫法是一回事。
 
@@ -507,7 +507,7 @@ Zero Bubble的作者基于DualPipe又提出了DualPipeV的改进，见作者[博
 
 DualPipeV 在 p=4, m=10的例子如下
 
-![image.png](image%2010.png)
+![image.png](image_10.png)
 
 通过仅保留前半部分的设备（并将从下至向上的microbatch的后半段接到从上至下的microbatch的前半段），可以获得一个不含“双向”部分的调度方案，该方案不再有参数重复所以参数显存占用减半，同时保持与原始方案相同的气泡率、中间激活内存占用等属性。
 
@@ -543,7 +543,7 @@ cooldown3：根据  f0_i > f1_i > b1_i ≥ m > b0_i
 
 和DualPipe中warmup阶段的类似，上面也是一个可行的调度策略，但是会存在一些气泡。为了压缩气泡，使用了zero bubble切分BW的策略，优先B的计算和传递，用W来填充气泡。
 
-![image.png](image%2011.png)
+![image.png](image_11.png)
 
 压缩气泡后的cooldown方案在上图用红线隔开，4个阶段如下：
 
@@ -639,15 +639,15 @@ DeepSeek的DualPipeV的[实现代码](https://github.com/deepseek-ai/DualPipe/bl
 
 Zero Bubble作者在[博客](https://hackmd.io/@ufotalent/S1N_ay0ckx)中还提到：如果完全解耦FB的计算，是可以彻底压缩warmup和steady间的bubble的，就如上一节最后图所示
 
-![image.png](image%2014.png)
+![image.png](image_14.png)
 
 在不考虑zero bubble作者提出的绕过优化器同步的策略时，上面这个调度，和下面是等价的
 
-![image.png](image%2015.png)
+![image.png](image_15.png)
 
 而这个调度和作者提出的ZB-V调度虽略有不同，但非常相似。
 
-![image.png](image%2016.png)
+![image.png](image_16.png)
 
 ZB-V作者有个[hand crafted实现](https://github.com/sail-sg/zero-bubble-pipeline-parallelism/blob/zero-bubble-v0.1.0/megatron/core/pipeline_parallel/handcrafted_zb_v.py)，有兴趣可以看看。
 
