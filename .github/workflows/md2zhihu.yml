@@ -41,6 +41,7 @@ jobs:
           else
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/blog.git
             git commit -m "Convert markdown to zhihu format"
             git push -f origin HEAD:${{ github.ref_name }}-md2zhihu
             echo "Results pushed to branch: ${{ github.ref_name }}-md2zhihu"
