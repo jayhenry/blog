@@ -1,24 +1,15 @@
-# 一文PP
+# 用几何和代数方法理解流水线并行：从1F1B到DualPipe
 
-下表展示了详细的比较，所有方案均基于相同数量的设备（记为d，也是流水线并行度），microbatch个数记为 m。
+## 简介
 
-| 方法 | 流水线气泡 | 简化气泡率 | 参数 | Activation Memory | PP 通信 |
-| --- | --- | --- | --- | --- | --- |
-| 1F1B | (d-1)(𝐹+𝐵+𝑊)=3(d-1)F | (d-1)/(d-1+m) | 1× | d | 1x |
-| ZB-H1 / ZB1P | (d-1)(𝐹+𝐵-2𝑊)=(d-1)F | (d-1)/(d-1+3m) | 1× | d | 1x |
-| DualPipe | (d/2-1)(𝐹&𝐵+𝐵-3𝑊)=(d/2-1)F | (d-2)/(d-2+3m) | 2× | d+1 | 1x |
-| DualPipeV | (d-1) (𝐹&𝐵+𝐵-3𝑊)/2=(d-1)F/2 | (d-1)/(d-1+6m) | 1× | d+1/2 | 2x |
-| 1F1B-I (v=2) | 3(d-1)F/2 | (d-1)/(d-1 + 2m ) | 1x | 3/2 d | 2x |
+流水线并行（Pipeline Parallelism）是大模型分布式训练中的核心技术之一，它将模型的不同层分配到不同的计算设备上，通过微批次（microbatch）的流水线化执行来提高设备利用率和训练吞吐量。然而，如何设计高效的流水线调度策略以最小化空闲时间（bubble）和显存占用，一直是该领域的研究热点。
 
-气泡率= 流水线气泡 / (流水线气泡 + 实际计算耗时)
+本文从几何直观和代数推导两个维度，系统梳理了流水线并行调度策略的演进脉络：从经典的1F1B（One Forward One Backward）调度，到ZB-H1/ZB-H2的细粒度反向拆分优化，再到DeepSeek-V3中提出的DualPipe及其变体DualPipeV。通过统一的分析框架，揭示不同调度策略背后的设计原理和数学规律。
 
-其中，实际耗时= m*(F+B+W)=3*m*F。F/B/W分别表示前向计算、激活值反向、参数反向的时间，而 F&B表示前向、激活反向、参数反向合并一起的时间。
-
-对于DualPipe是个特例，因为双向喂入microbatch，所以实际耗时总长度是m/2个microbatch的长度，即实际耗时=m/2*(F+B+W)=3*m*F/2。
-
-简化计算，可以假设 F=B=W，F&B=3F。
-
-对半裁剪方案DualPipeV的 PP 通信量是其他方法的两倍。然而，由于参数内存减少了一半，这种优势弥补了通信开销的增加，因为相较于 EP 通信，PP 通信的开销较小。
+本文适合对分布式训练有一定了解的读者阅读，需要熟悉基本的流水线并行概念（如microbatch、stage、forward/backward计算等）。阅读本文后，你将能够：
+- 理解主流流水线调度策略的核心设计思想
+- 掌握用几何方法和代数方法分析调度规律的技巧
+- 理解不同调度策略在显存占用和bubble时间上的权衡
 
 ## 1F1B
 
@@ -37,9 +28,13 @@
 1. FB交错出现：各个stage上，F和B交错出现，即 (F, B) x N
 2. FB序号关系：对于最后一个stage3（即Device 3），前向F 和 反向B 是同1个microbatch，有相同的microbatch id序号。每往前一个stage，前向F的microbatch id比反向B的microbatch id加1，成等差数列。如stage3中是 F4后紧跟B4，记作(F4, B4)。而 stage2中是 (F4, B3)，stage1中是 (F4,B2)，stage0中是 (F4, B1) 。一般地，对于stage i，计算对为  (Fx, Bx-(p-1-i) )
 
-其中规则2中的序号关系又是1F1B的重点特征，这本质上是为了控制第一个stage0上占用的显存。具体做法是最多只能驻留p=4大小的micro batch做F，即图中的F0,F1,F2,F3，由于他们4个都没做反向，所以中间结果都必须占用显存不能释放。
+其中规则2中的序号关系又是1F1B的重点特征，这本质上是为了控制第一个stage0上占用的显存。具体做法是最多只能驻留p=4大小的micro batch做F，即图中的F0,F1,F2,F3，由于他们4个都没做反向，所以中间结果（激活值）都必须占用显存不能释放。
 
 由此也可以算出1F1B占用的峰值显存。假设一个microbatch中间结果占用的显存为 $M_{B}$，那么1F1B在stage0上占用的显存最多，其峰值显存为 $pM_B$。
+
+如果不做流水线并行，一个microbatch中间结果占用显存为 $M_{B}^{all}$，那么做1F1B流水线并行后，中间结果的峰值显存会变小吗？
+
+答案是不会变小。这是因为虽然切分layer后，一个mircobatch中间结果变为原来的 $\frac{1}{p}$，即 $M_{B}=M_{B}^{all} / p$。但是像前面说明的，1F1B为了减少气泡同时驻留了p个microbatch的中间结果，所以总的中间结果显存和原来相同，仍为$p*M_B=M_B^{all}$。
 
 除了稳态阶段外，1F1B还有前面的warmup阶段和后面的cooldown阶段，他们有什么规律呢？有多种方法找到这个规律。
 
@@ -67,7 +62,7 @@
 
 同理，在cooldown阶段，stage i需要完成 p-1-i个B计算单元。
 
-### 1F1B的代码实现
+### 1F1B的Megatron代码实现
 
 在[Megatron 1F1B 实现](https://github.com/NVIDIA/Megatron-LM/blob/861a8fa2d521761c435b69ccbe022511f7713d45/megatron/core/pipeline_parallel/schedules.py#L1827)中可以看到上述规律，核心代码如下
 
@@ -178,8 +173,7 @@ def forward_backward_pipelining_without_interleaving():
 ```
 
 ## ZB-H1
-
-核心思路是：
+为了理解DualPipe的做法，需要先了解一系列zero bubble流水线并行的策略。首先是ZB-H1，它的核心思路是：
 
 - 将反向整体的B拆成，针对输入的反向B和针对参数的反向W。优先调度F和B。这样B反向后立即传给下一个stage，不用等待W，W可以放置在任意需要填充bubble的位置。这样整体的时间缩短了，bubble减少了。
 - 另外，在stage0调度时，同样保证最多驻留p个F，这样与1F1B有相同的峰值显存 $pM_B$。
@@ -235,7 +229,7 @@ cooldown2阶段：
 
 根据 fi ≥ bi ≥ m > wi，得到    m+p-1 >  x≥ m+p-1-i，表示stage i中 （，，Wx-(p-1))））有 (m+p-1) - (m+p-1-i)=i 个。
 
-作者在实现 ZB-H1时，实际是实现了一个上面ZB-H1的变种，见 https://github.com/sail-sg/zero-bubble-pipeline-parallelism/tree/zb-h1-quick-start。这个变种尽量不修改整个的(BW)，如下图。好处，一个是可以在Megatron上做更少的修改，另一个是在TP并行同时开启时可以利用Megatron中已经实现的TP反向的通信重叠策略，即 [图解Megatron TP中的计算通信overlap](https://zhuanlan.zhihu.com/p/16594218518) ****文章中第4节介绍的重叠策略。
+作者在实现 ZB-H1时，实际是实现了一个上面ZB-H1的变种，见 [代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism/tree/zb-h1-quick-start) 。这个变种尽量不修改整个的(BW)，如下图。好处，一个是可以在Megatron上做更少的修改，另一个是在TP并行同时开启时可以利用Megatron中已经实现的TP反向的通信重叠策略，即 [图解Megatron TP中的计算通信overlap](https://zhuanlan.zhihu.com/p/16594218518) 文章中第4节介绍的重叠策略。
 
 ![image.png](image%206.png)
 
@@ -324,7 +318,7 @@ cooldown2的[代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism
 
 ![image.png](image%207.png)
 
-与ZB-H1不同，核心思路是：在warmup阶段，不受显存的约束，尽可能地调度更多的F，从而减少气泡。实际上可以计算，中间激活值 显存占用约为 1F1B的2倍，即 $2pM_B$，这也是命名H2的原因。
+ZB-H2与ZB-H1都做了BW的分离，而他们核心的不同是：在warmup阶段，不受显存的约束，尽可能地调度更多的F，从而减少气泡。实际上可以计算，中间激活值 显存占用约为 1F1B的2倍，即 $2pM_B$，这也是命名H2的原因。
 
 ZB-H2 序号关系：稳态阶段，计算对为（Fx, Bx-2(p-1-i), Wx-2(p-1)）。
 
@@ -355,14 +349,11 @@ cooldown2阶段：bi ≥ m > wi，
 DualPipe 使用了双向的调度，也就是从流水线的两端（device0 和device p-1）同时喂入micro batch数据，从正向喂入10个micro batch（图中micro id序号0-9黑字），从反向喂入10个micro batch（图中micro id 序号 0-9白字）。
 这个做法要求DualPipe存储两份参数，一份参数从device 0到device p-1分布（这里称为 model chunk0），另一份参数从device p-1到device 0分布（model chunk1）。
 
-这么做的原因：
-
-- ~~一是，DeepSeekV2使用的ZB-H1的流水线并行策略，DualPipe比它有更低的气泡率（气泡率相同，DualPipeV气泡率才下降）~~，但是代价是参数占用显存扩大了一倍。
-- 二是，要组成一个 (F0, B1, F1, B0) 的稳态阶段，在这个阶段中，可以做前向、反向的通信计算重叠，来隐藏耗时的ep all to all通信，示意图如下（https://github.com/deepseek-ai/profile-data）
+这么做的原因是，要组成一个 (F0, B1, F1, B0) 的稳态阶段，在这个阶段中，可以做前向、反向的通信计算重叠，来隐藏耗时的ep all to all通信，示意图如下，来自[deepseek开源的profile](https://github.com/deepseek-ai/profile-data)。但是代价是参数占用显存扩大了一倍。
 
 ![image.png](image%209.png)
 
-由于DualPipe 里 1个GPU(也叫device)上放置2个model chunk。所以有时也说1个物理device被当做了2个virtual device。
+由于DualPipe 里 1个GPU(也叫device)上放置2个model chunk。所以有时也说1个物理device被当做了2个virtual device。这两个叫法是一回事。
 
 由于1个device上放置2个model chunk，导致前面1F1B类型的通用规则和特有规则都发生了变化。
 
@@ -388,7 +379,7 @@ virtual device类型调度策略的通用规则如下：
     8. 可以看到F0和B1的序号固定相差 p/2=4，而F1和B0则随stage i成等差数列。根据等差数据的某一项以及公差，很容易推导出，stage i中序号关系是  (F0_x, B1_(x-p/2), F1_(x-p/2+1+i), B0_(x-p+1+i)) 
 3. F的起始限制：仍然只考虑上半部分，由于 F1 从下半部分往上传递，较晚到达上层，即在起始warmup阶段，F1_0要滞后F0_0一段时间。具体地，对于stage i，micro id=0的F1_0要晚于F0_0的时间为 p-1-2i 个单位时间。
 
-(F0, B1, F1, B0)的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
+我们分析 (F0, B1, F1, B0) 的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
 
 f0_i=x > f1_i=x-p/2+1+i > b1_i=x-p/2 ≥ b0_i=x-p+1+i
 
@@ -512,7 +503,7 @@ phase1 ^= self.is_in_second_half
 
 ## DualPipeV
 
-Zero Bubble的作者基于DualPipe又提出了DualPipeV的改进，见作者博客  https://hackmd.io/@ufotalent/S1N_ay0ckx。
+Zero Bubble的作者基于DualPipe又提出了DualPipeV的改进，见作者[博客](https://hackmd.io/@ufotalent/S1N_ay0ckx)。
 
 DualPipeV 在 p=4, m=10的例子如下
 
@@ -524,7 +515,7 @@ DualPipeV 在 p=4, m=10的例子如下
 
 与 DualPipe的分析类似，DualPipeV里当stage i进入稳态时，计算对的序号关系是  (F0_x, B1_(x-p), F1_(x-p+1+i), B0_(x-2p+1+i)) 。例如 Device1中的 (F0_7, B1_3, F1_5, B0_1)。
 
-(F0, B1, F1, B0)的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
+我们分析 (F0, B1, F1, B0) 的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
 
 f0_i=x > f1_i=x-p+1+i > b1_i=x-p ≥ b0_i=x-2p+1+i
 
@@ -639,7 +630,38 @@ DeepSeek的DualPipeV的[实现代码](https://github.com/deepseek-ai/DualPipe/bl
 
 但是代码中只做了最后1个device上第1个迭代的FB解耦。原因是不需要像图上这么激进，因为瓶颈在 下1个 (F1_5, F0_1) 的FB耦合计算块计算时，仍然要等待。这里只做最后1个device上的特殊处理，来让后续FB耦合计算块稍微提前，来压缩一些通信间隔等小的bubble。
 
-## ZB-V手动
+## Interleaved 1F1B
+
+## 总结
+下表展示了各方法的详细比较，所有方案均基于相同数量的设备（记为d，也是流水线并行度），microbatch个数记为 m。
+
+| 方法 | 流水线气泡 | 简化气泡率 | 参数 | Activation Memory | PP 通信 |
+| --- | --- | --- | --- | --- | --- |
+| 1F1B | (d-1)(𝐹+𝐵+𝑊)=3(d-1)F | (d-1)/(d-1+m) | 1× | d | 1x |
+| ZB-H1 / ZB1P | (d-1)(𝐹+𝐵-2𝑊)=(d-1)F | (d-1)/(d-1+3m) | 1× | d | 1x |
+| DualPipe | (d/2-1)(𝐹&𝐵+𝐵-3𝑊)=(d/2-1)F | (d-2)/(d-2+3m) | 2× | d+1 | 1x |
+| DualPipeV | (d-1) (𝐹&𝐵+𝐵-3𝑊)/2=(d-1)F/2 | (d-1)/(d-1+6m) | 1× | d+1/2 | 2x |
+| 1F1B-I (v=2) | 3(d-1)F/2 | (d-1)/(d-1 + 2m ) | 1x | 3/2 d | 2x |
+
+气泡率= 流水线气泡 / (流水线气泡 + 实际计算耗时)
+
+其中，实际耗时$= m*(F+B+W)=3*m*F$。F/B/W分别表示前向计算、激活值反向、参数反向的时间，而 F&B表示前向、激活反向、参数反向合并一起的时间。
+
+对于DualPipe是个特例，因为双向喂入microbatch，所以实际耗时总长度是m/2个microbatch的长度，即实际耗时$=m/2*(F+B+W)=3*m*F/2$。
+
+简化计算，可以假设 F=B=W，F&B=3F。
+
+对半裁剪方案DualPipeV的 PP 通信量是其他方法的两倍。然而，由于参数内存减少了一半，这种优势弥补了通信开销的增加，因为相较于 EP 通信，PP 通信的开销较小。
+
+
+## 其他计划
+ ZB-P1
+ ZB-V自动
+ ZB-V half（memory）
+ ZB-V min (memory)
+ Pipe Offload
+
+## 附录: ZB-V手动
 
 Zero Bubble作者在博客  https://hackmd.io/@ufotalent/S1N_ay0ckx中还提到：如果完全解耦FB的计算，是可以彻底压缩warmup和steady间的bubble的，就如上一节最后图所示
 
@@ -657,18 +679,5 @@ ZB-V作者有个[hand crafted实现](https://github.com/sail-sg/zero-bubble-pipe
 
 所谓hand crafted，就是指先手工设计调度，然后根据手工设计调度的规律进行实现。前面介绍的所有代码实现，都可以归为hand crafted一类。这跟zero bubble作者提出的自动调度策略相对应。
 
-## ZB-P1
-
-## ZB-V自动
-
-## ZB-V half（memory）
-
-## ZB-V min (memory)
-
-## Interleaved 1F1B
-
-## Pipe Offload
-
 ## Ref
-
 1. 可视化工具 [https://huggingface.co/spaces/sail/pipeline-parallelism-with-controllable-memory](https://huggingface.co/spaces/sail/pipeline-parallelism-with-controllable-memory)
