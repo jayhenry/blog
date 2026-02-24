@@ -26,7 +26,7 @@
 对于1F1B来说，除了满足上面通用规则，还有特有的规则。可以观察它的稳态阶段的一部分，即图中的红框，规则如下：
 
 1. FB交错出现：各个stage上，F和B交错出现，即 (F, B) x N
-2. FB序号关系：对于最后一个stage3（即Device 3），前向F 和 反向B 是同1个microbatch，有相同的microbatch id序号。每往前一个stage，前向F的microbatch id比反向B的microbatch id加1，成等差数列。如stage3中是 F4后紧跟B4，记作(F4, B4)。而 stage2中是 (F4, B3)，stage1中是 (F4,B2)，stage0中是 (F4, B1) 。一般地，对于stage i，计算对为  (Fx, Bx-(p-1-i) )
+2. FB序号关系：对于最后一个stage3（即Device 3），前向F 和 反向B 是同1个microbatch，有相同的microbatch id序号。每往前一个stage，前向F的microbatch id比反向B的microbatch id加1，成等差数列。如stage3中是 F4后紧跟B4，记作(F4, B4)。而 stage2中是 (F4, B3)，stage1中是 (F4,B2)，stage0中是 (F4, B1) 。一般地，对于stage i，计算对为  `(Fx, Bx-(p-1-i))`
 
 其中规则2中的序号关系又是1F1B的重点特征，这本质上是为了控制第一个stage0上占用的显存。具体做法是最多只能驻留p=4大小的micro batch做F，即图中的F0,F1,F2,F3，由于他们4个都没做反向，所以中间结果（激活值）都必须占用显存不能释放。
 
@@ -54,11 +54,11 @@
 
 这样就得到了和图1相同的microbatch=8的调度策略。
 
-在warmup阶段看剔除的规律：就是最后一个stage p-1不剔除，从它往上每个stage多剔除一个B。即stage i 剔除 p-1-i。这就是stage i在warmup阶段完成的F个数。
+在warmup阶段看剔除的规律：就是最后一个stage p-1不剔除，从它往上每个stage多剔除一个B。即stage i 剔除 `p-1-i`。这就是stage i在warmup阶段完成的F个数。
 
-方法二：代数法。直接根据上面稳态阶段的规律（即 1F1B特有规则2：FB序号关系），可以知道，stage p-1 上第1个稳态计算对为 (F0, B0)，stage p-2 上为 (F1, B0)，stage p-3上为 (F2, B0)，…，stage 1上为 (Fp-2, B0)，stage 0上为 (Fp-1, B0)。对于stage i，计算对为  (Fx-（p-1-i）, Bx )。
+方法二：代数法。直接根据上面稳态阶段的规律（即 1F1B特有规则2：FB序号关系），可以知道，stage p-1 上第1个稳态计算对为 `(F0, B0)`，stage p-2 上为 `(F1, B0)`，stage p-3上为 `(F2, B0)`，…，stage 1上为 `(Fp-2, B0)`，stage 0上为 `(Fp-1, B0)`。对于stage i，计算对为  `(Fx-(p-1-i), Bx)`。
 
-根据通用规则2（多batch的stage内顺序），可以知道每个stage都必须完成前面micro序号的F计算。即 stage i 在warmup阶段需要完成 p-1-i 个F计算单元。
+根据通用规则2（多batch的stage内顺序），可以知道每个stage都必须完成前面micro序号的F计算。即 stage i 在warmup阶段需要完成 `p-1-i` 个F计算单元。
 
 同理，在cooldown阶段，stage i需要完成 p-1-i个B计算单元。
 
@@ -66,7 +66,7 @@
 
 在[Megatron 1F1B 实现](https://github.com/NVIDIA/Megatron-LM/blob/861a8fa2d521761c435b69ccbe022511f7713d45/megatron/core/pipeline_parallel/schedules.py#L1827)中可以看到上述规律，核心代码如下
 
-```bash
+```python
 def forward_backward_pipelining_without_interleaving():
     # Compute number of warmup microbatches.
     num_warmup_microbatches = (
@@ -187,7 +187,7 @@ p(pipeline parallel)=4, m(micro batch number)=8的ZB-H1如下
 ZB-H1稳态阶段的特有规则：
 
 1. FBW交错
-2. 序号关系：对于最后一个stage3为 (F4,B4,W1)，stage2为（F4,B3,W1），stage1为（F4,B2,W1），stage0为（F4,B1,W1）。即stage i 上计算对为 (Fx, Bx-(p-1-i), Wx-(p-1))。其中B的序号随变量stage i成等差序列。
+2. 序号关系：对于最后一个stage3为 `(F4, B4, W1)`，stage2为`（F4, B3, W1）`，stage1为`（F4, B2, W1）`，stage0为`（F4, B1, W1）`。即stage i 上计算对为 `(Fx, Bx-(p-1-i), Wx-(p-1))`。其中B的序号随变量stage i成等差序列。
 
 解释这个序号关系的原因：与1F1B一样，为了保证stage0上最多驻留p个F块，形成了上面这样的序号关系。
 
@@ -203,31 +203,31 @@ ZB-H1稳态阶段的特有规则：
 
 方法二：代数法。
 
-稳态时计算对中：F的序号 fi=x   ≥   B的序号 bi = x-p+1+i   ≥   W的序号 wi=x-p+1。
+稳态时计算对中：F的序号 `fi=x ≥ bi = x-p+1+i ≥ wi=x-p+1`。
 
-所以 (Fx, Bx-(p-1-i), Wx-(p-1)) 在warmup阶段会先后出现(Fx, , )和 (Fx, Bx-(p-1-i), ) 的情况。
+所以 `(Fx, Bx-(p-1-i), Wx-(p-1))` 在warmup阶段会先后出现`(Fx, , )`和 `(Fx, Bx-(p-1-i), )` 的情况。
 
-在 (Fx, , ) 的warmup1阶段，bi 和 wi 都无法到0，所以只有Fx。
+在 `(Fx, , )` 的warmup1阶段，bi 和 wi 都无法到0，所以只有Fx。
 
-在  (Fx, Bx-(p-1-i), ) 的warmup2阶段，bi ≥ 0，但是wi仍然小于0。
+在  `(Fx, Bx-(p-1-i), )` 的warmup2阶段，bi ≥ 0，但是wi仍然小于0。
 
 warmup1阶段：
 
-根据 0>bi ≥ wi 得到 x<p-1-i ，表示 stage i 中单独的F (Fx, , ) 有 p-1-i个。
+根据 `0 > bi ≥ wi` 得到 `x < p-1-i` ，表示 stage i 中单独的F `(Fx, , )` 有 p-1-i个。
 
 warmup2阶段：
 
-根据 bi≥0>wi 得到 p-1-i≤ x <p-1，表示stage i中 (Fx, Bx-(p-1-i), )  有 (p-1) - (p-1-i)=i个。
+根据 `bi ≥ 0 > wi` 得到 `p-1-i ≤ x < p-1`，表示stage i中 `(Fx, Bx-(p-1-i), )`  有 (p-1) - (p-1-i)=i个。
 
-类似地，在cooldown阶段会先后出现 （, Bx-(p-1-i), Wx-(p-1))）和 （，，Wx-(p-1))））的情况。
+类似地，在cooldown阶段会先后出现 `（, Bx-(p-1-i), Wx-(p-1)）`和 `（, , Wx-(p-1)）`的情况。
 
 cooldown1阶段：
 
-根据  fi ≥ m > bi ≥ wi，得到  m+p-1-i > x ≥ m ，表示 stage i中 （, Bx-(p-1-i), Wx-(p-1))）有 (m+p-1-i) - m = p-1-i 个。
+根据  `fi ≥ m > bi ≥ wi`，得到  `m+p-1-i > x ≥ m` ，表示 stage i中 `（, Bx-(p-1-i), Wx-(p-1)）`有 (m+p-1-i) - m = p-1-i 个。
 
 cooldown2阶段：
 
-根据 fi ≥ bi ≥ m > wi，得到    m+p-1 >  x≥ m+p-1-i，表示stage i中 （，，Wx-(p-1))））有 (m+p-1) - (m+p-1-i)=i 个。
+根据 `fi ≥ bi ≥ m > wi`，得到    `m+p-1 > x ≥ m+p-1-i`，表示stage i中 `（, , Wx-(p-1)）`有 (m+p-1) - (m+p-1-i)=i 个。
 
 作者在实现 ZB-H1时，实际是实现了一个上面ZB-H1的变种，见 [代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism/tree/zb-h1-quick-start) 。这个变种尽量不修改整个的(BW)，如下图。好处，一个是可以在Megatron上做更少的修改，另一个是在TP并行同时开启时可以利用Megatron中已经实现的TP反向的通信重叠策略，即 [图解Megatron TP中的计算通信overlap](https://zhuanlan.zhihu.com/p/16594218518) 文章中第4节介绍的重叠策略。
 
@@ -320,25 +320,25 @@ cooldown2的[代码](https://github.com/sail-sg/zero-bubble-pipeline-parallelism
 
 ZB-H2与ZB-H1都做了BW的分离，而他们核心的不同是：在warmup阶段，不受显存的约束，尽可能地调度更多的F，从而减少气泡。实际上可以计算，中间激活值 显存占用约为 1F1B的2倍，即 $2pM_B$，这也是命名H2的原因。
 
-ZB-H2 序号关系：稳态阶段，计算对为（Fx, Bx-2(p-1-i), Wx-2(p-1)）。
+ZB-H2 序号关系：稳态阶段，计算对为`（Fx, Bx-2(p-1-i), Wx-2(p-1)）`。
 
-其中F、B、W的序号大小关系为： fi=x ≥ bi=x-2(p-1-i) ≥ wi=x-2(p-1)。
+其中F、B、W的序号大小关系为： `fi=x ≥ bi=x-2(p-1-i) ≥ wi=x-2(p-1)`。
 
-warmup1阶段：0 > bi ≥ wi
+warmup1阶段：`0 > bi ≥ wi`
 
-得到 2(p-1-i) > x ≥ 0  ，共 2(p-1-i) 个 (Fx, ,)
+得到 `2(p-1-i) > x ≥ 0`  ，共 `2(p-1-i)` 个 (Fx, ,)
 
-warmup2阶段：bi ≥ 0 > wi
+warmup2阶段：`bi ≥ 0 > wi`
 
-得到  2(p-1) > x ≥ 2(p-1-i)，共 2(p-1) - 2(p-1-i)=2i个(Fx, Bx-2(p-1-i), )
+得到  `2(p-1) > x ≥ 2(p-1-i)`，共 `2(p-1) - 2(p-1-i)=2i`个 `(Fx, Bx-2(p-1-i), )`
 
-cooldown1阶段：x ≥ m > bi
+cooldown1阶段：`x ≥ m > bi`
 
-得到  m+2(p-1-i) > x ≥ m，共 2(p-1-i) 个  (, Bx-2(p-1-i), Wx-2(p-1)）
+得到  `m+2(p-1-i) > x ≥ m`，共 `2(p-1-i)` 个  `(, Bx-2(p-1-i), Wx-2(p-1)）`
 
-cooldown2阶段：bi ≥ m > wi，
+cooldown2阶段：`bi ≥ m > wi`，
 
-得到   m+2(p-1) > x ≥ m+2(p-1-i)，共 2i 个  (, , Wx-2(p-1)）
+得到   `m+2(p-1) > x ≥ m+2(p-1-i)`，共 2i 个  `(, , Wx-2(p-1)）`
 
 ## DualPipe
 
@@ -349,7 +349,7 @@ cooldown2阶段：bi ≥ m > wi，
 DualPipe 使用了双向的调度，也就是从流水线的两端（device0 和device p-1）同时喂入micro batch数据，从正向喂入10个micro batch（图中micro id序号0-9黑字），从反向喂入10个micro batch（图中micro id 序号 0-9白字）。
 这个做法要求DualPipe存储两份参数，一份参数从device 0到device p-1分布（这里称为 model chunk0），另一份参数从device p-1到device 0分布（model chunk1）。
 
-这么做的原因是，要组成一个 (F0, B1, F1, B0) 的稳态阶段，在这个阶段中，可以做前向、反向的通信计算重叠，来隐藏耗时的ep all to all通信，示意图如下，来自[deepseek开源的profile](https://github.com/deepseek-ai/profile-data)。但是代价是参数占用显存扩大了一倍。
+这么做的原因是，要组成一个 `(F0, B1, F1, B0)` 的稳态阶段，在这个阶段中，可以做前向、反向的通信计算重叠，来隐藏耗时的ep all to all通信，示意图如下，来自[deepseek开源的profile](https://github.com/deepseek-ai/profile-data)。但是代价是参数占用显存扩大了一倍。
 
 ![image.png](image_9.png)
 
@@ -367,65 +367,65 @@ virtual device类型调度策略的通用规则如下：
 
 对于DualPipe来说，除了满足上面通用规则，还有特有的规则。可以观察它的稳态阶段的一部分，即图中的红框，规则如下：
 
-1. 不同model chunk的FB交错出现：各个stage上，不同model chunk的F和B交错出现，即 (F0, B1, F1, B0) x N。其中F0表示model chunk0的前向，F1表示model chunk1的前向。
-2. FB序号关系：看上图，稳态中挑选F0_8（0表示modelchunk0，8表示micro batch id为8）所在的计算对，有
-    1. stage0中为 (F0_8, B1_4, F1_5, B0_1)
-    2. stage1中为 (F0_8, B1_4, F1_6, B0_2)
-    3. stage2中为 (F0_8, B1_4, F1_7, B0_3)
-    4. stage3中为 (F0_8, B1_4, F1_8, B0_4)
-    5. stage4中为 (F0_8, B1_4, F1_9, B0_5)
+1. 不同model chunk的FB交错出现：各个stage上，不同model chunk的F和B交错出现，即 `(F0, B1, F1, B0)` x N。其中F0表示model chunk0的前向，F1表示model chunk1的前向。
+2. FB序号关系：看上图，稳态中挑选`F0_8`（0表示modelchunk0，8表示micro batch id为8）所在的计算对，有
+    1. stage0中为 `(F0_8, B1_4, F1_5, B0_1)`
+    2. stage1中为 `(F0_8, B1_4, F1_6, B0_2)`
+    3. stage2中为 `(F0_8, B1_4, F1_7, B0_3)`
+    4. stage3中为 `(F0_8, B1_4, F1_8, B0_4)`
+    5. stage4中为 `(F0_8, B1_4, F1_9, B0_5)`
     6. stage5~7由于micro batch number太小，超出了稳态范围，进入cooldown状态
     7. 由于DualPipe上下对称，我们只分析上半部分，下半部分对称得到相关结果即可。
-    8. 可以看到F0和B1的序号固定相差 p/2=4，而F1和B0则随stage i成等差数列。根据等差数据的某一项以及公差，很容易推导出，stage i中序号关系是  (F0_x, B1_(x-p/2), F1_(x-p/2+1+i), B0_(x-p+1+i)) 
-3. F的起始限制：仍然只考虑上半部分，由于 F1 从下半部分往上传递，较晚到达上层，即在起始warmup阶段，F1_0要滞后F0_0一段时间。具体地，对于stage i，micro id=0的F1_0要晚于F0_0的时间为 p-1-2i 个单位时间。
+    8. 可以看到F0和B1的序号固定相差 p/2=4，而F1和B0则随stage i成等差数列。根据等差数据的某一项以及公差，很容易推导出，stage i中序号关系是  `(F0_x, B1_(x-p/2), F1_(x-p/2+1+i), B0_(x-p+1+i))` 
+3. F的起始限制：仍然只考虑上半部分，由于 F1 从下半部分往上传递，较晚到达上层，即在起始warmup阶段，`F1_0`要滞后`F0_0`一段时间。具体地，对于stage i，micro id=0的`F1_0`要晚于`F0_0`的时间为 `p-1-2i` 个单位时间。
 
-我们分析 (F0, B1, F1, B0) 的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
+我们分析 `(F0, B1, F1, B0)` 的序号`f0_i, b1_i, f1_i, b0_i` 大小关系为：
 
-f0_i=x > f1_i=x-p/2+1+i > b1_i=x-p/2 ≥ b0_i=x-p+1+i
+`f0_i=x > f1_i=x-p/2+1+i > b1_i=x-p/2 ≥ b0_i=x-p+1+i`
 
-注意， b1_i ≥ b0_i，是因为我们只分析上半部分，即  $i \in [0, p/2-1]$
+注意， `b1_i ≥ b0_i`，是因为我们只分析上半部分，即  $i \in [0, p/2-1]$
 
 下面分析warmup和cooldown阶段，对于任意 stage i 有：
 
-warmup1： f0_i ≥ 0 > f1_i > b1_i ≥ b0_i 
+warmup1： `f0_i ≥ 0 > f1_i > b1_i ≥ b0_i` 
 
-得到  p/2 -1-i >  x ≥ 0，故 (F0, , , ) 有 p/2 - 1 - i个。
+得到  `p/2 - 1 - i > x ≥ 0`，故 `(F0, , , )` 有 `p/2 - 1 - i`个。
 
-warmup2：f0_i > f1_i ≥ 0 > b1_i ≥ b0_i 
+warmup2：`f0_i > f1_i ≥ 0 > b1_i ≥ b0_i` 
 
-得到   p/2 > x ≥ p/2 -1 -i，故  (F0, , F1,) 有 1+i 个。
+得到   `p/2 > x ≥ p/2 - 1 - i`，故  `(F0, , F1,)` 有 `1+i` 个。
 
-warmup 3： f0_i > f1_i > b1_i ≥ 0 > b0_i
+warmup 3： `f0_i > f1_i > b1_i ≥ 0 > b0_i`
 
-得到  p-1-i > x ≥ p/2 ，故 (F0, B1, F1, ) 有 p/2 -1-i 个。
+得到  `p-1-i > x ≥ p/2` ，故 `(F0, B1, F1, )` 有 `p/2 - 1 - i` 个。
 
-总共有 F0 为 p-i-1 个。
+总共有 F0 为 `p-i-1` 个。
 
 有一个小优化，是压缩warmup阶段的气泡。
 
 上面分析的warmup阶段的方案也是可行的一种方案。
 
-但是考虑到DualPipe特有规则3（F的起始限制），对任一stage i上，F1_0要在p-1-2i个单位时间后才能到达，但是warmup1在p/2-1-i个单位时间后就结束了。要做 warmup 2的 (F0, ,F1,) 就要继续等待 p/2-1-i 个单位时间。由此产生了bubble。
+但是考虑到DualPipe特有规则3（F的起始限制），对任一stage i上，`F1_0`要在`p-1-2i`个单位时间后才能到达，但是warmup1在`p/2-1-i`个单位时间后就结束了。要做 warmup 2的 (F0, ,F1,) 就要继续等待 `p/2-1-i` 个单位时间。由此产生了bubble。
 
 为了压缩bubble，可以将 warmup 1~3阶段的 F0 提前来做填充，由此产生了下面的warmup方案：
 
-warmup1：(F0, , , ) 做 p - 2 - 2i个，用来等待第一个F1_0的到来。
+warmup1：`(F0, , , )` 做 `p - 2 - 2i`个，用来等待第一个`F1_0`的到来。
 
-warmup2:  (F0, , F1,) 做 1+i 个，至此warmup阶段的F已全部用完。
+warmup2:  `(F0, , F1,)` 做 `1+i` 个，至此warmup阶段的F已全部用完。
 
-warmup3:  (F0, B1, F1, ) 退化为 (, B1, F1, )，做  p/2 -1-i 个。
+warmup3:  `(F0, B1, F1, )` 退化为 `(, B1, F1, )`，做  `p/2 - 1 - i` 个。
 
 这就是上图中DeepSeek官方实现的DualPipe方案。这个方案相比原始方案，减少了warmup的bubble，但是代价是stage0要驻留多1倍的F计算块，因而中间激活值占用的内存也多了1倍。
 
-cooldown阶段可以类似分析，会逐步做  (, B1, F1, B0) 、 (, B1, , B0)  和  (, , , B0) 。这部分可以参考下一节DualPipeV中的内容。
+cooldown阶段可以类似分析，会逐步做  `(, B1, F1, B0)` 、 `(, B1, , B0)`  和  `(, , , B0)` 。这部分可以参考下一节DualPipeV中的内容。
 
-稳态阶段 (F0, B1, F1, B0) 的个数，可以统计F0得到。F0总共有 m_half=m/2个，warmup阶段消耗掉 p-i-1个。故稳态阶段有 m/2 - p + i +1 个。 
+稳态阶段 `(F0, B1, F1, B0)` 的个数，可以统计F0得到。F0总共有 `m_half=m/2`个，warmup阶段消耗掉 p-i-1个。故稳态阶段有 `m/2 - p + i + 1` 个。 
 
 ### DualPipe的代码实现
 
 [官方代码](https://github.com/deepseek-ai/DualPipe/blob/3da1bbea53606543d7f5f232338fc58096db30e3/dualpipe/dualpipe.py#L358)实现的很清晰，可以直接和上面的分析对照。核心逻辑如下。
 
-```bash
+```python
     def step(
         self,
         *inputs: Optional[torch.Tensor],
@@ -496,7 +496,7 @@ cooldown阶段可以类似分析，会逐步做  (, B1, F1, B0) 、 (, B1, , B0)
 
 最后，值得一提的是，前面分析时提到只分析上半部分，下半部分对称得到相关结果即可。这个对称操作如下，分布在各种需要使用phase的函数里，比如 [`_forward_backward_compute_chunk`函数](https://github.com/deepseek-ai/DualPipe/blob/3da1bbea53606543d7f5f232338fc58096db30e3/dualpipe/dualpipe.py#L132)中
 
-```bash
+```python
 phase0 ^= self.is_in_second_half
 phase1 ^= self.is_in_second_half
 ```
@@ -513,33 +513,33 @@ DualPipeV 在 p=4, m=10的例子如下
 
 代价是 PP 通信量是其他方法的两倍。然而相较于 EP 通信，PP 通信的开销较小，仍然能够做到稳态阶段的计算通信隐藏。
 
-与 DualPipe的分析类似，DualPipeV里当stage i进入稳态时，计算对的序号关系是  (F0_x, B1_(x-p), F1_(x-p+1+i), B0_(x-2p+1+i)) 。例如 Device1中的 (F0_7, B1_3, F1_5, B0_1)。
+与 DualPipe的分析类似，DualPipeV里当stage i进入稳态时，计算对的序号关系是  `(F0_x, B1_(x-p), F1_(x-p+1+i), B0_(x-2p+1+i))` 。例如 Device1中的 `(F0_7, B1_3, F1_5, B0_1)`。
 
-我们分析 (F0, B1, F1, B0) 的序号f0_i, b1_i, f1_i, b0_i 大小关系为：
+我们分析 `(F0, B1, F1, B0)` 的序号`f0_i, b1_i, f1_i, b0_i` 大小关系为：
 
-f0_i=x > f1_i=x-p+1+i > b1_i=x-p ≥ b0_i=x-2p+1+i
+`f0_i=x > f1_i=x-p+1+i > b1_i=x-p ≥ b0_i=x-2p+1+i`
 
 并且可以得到 压缩bubble的warmup方案：
 
-warmup1：(F0, , , ) 做 2p - 2 - 2i个，用来等待第一个F1_0的到来。
+warmup1：`(F0, , , )` 做 `2p - 2 - 2i`个，用来等待第一个`F1_0`的到来。
 
-warmup2:  (F0, , F1,) 做 1+i 个，至此warmup阶段的F已全部用完。
+warmup2:  `(F0, , F1,)` 做 `1+i` 个，至此warmup阶段的F已全部用完。
 
-warmup3:  (F0, B1, F1, ) 退化为 (, B1, F1, )，做  p -1-i 个。
+warmup3:  `(F0, B1, F1, )` 退化为 `(, B1, F1, )`，做  `p - 1 - i` 个。
 
-稳态中 (F0, B1, F1, B0)的个数为 m - (2p-1-i) 个。
+稳态中 `(F0, B1, F1, B0)`的个数为 `m - (2p-1-i)` 个。
 
-cooldown1：根据 f0_i ≥ m > f1_i > b1_i ≥ b0_i 
+cooldown1：根据 `f0_i ≥ m > f1_i > b1_i ≥ b0_i` 
 
-得到 m+p-1-i > x ≥ m，故 (, B1, F1, B0) 有 p-1-i个
+得到 `m+p-1-i > x ≥ m`，故 `(, B1, F1, B0)` 有 p-1-i个
 
-cooldown2：根据 f0_i > f1_i ≥ m > b1_i ≥ b0_i 
+cooldown2：根据 `f0_i > f1_i ≥ m > b1_i ≥ b0_i` 
 
-得到   m+p > x ≥ m+p-1-i，故 （, B1, , B0）有 i+1个
+得到   `m+p > x ≥ m+p-1-i`，故 `（, B1, , B0）`有 `i+1`个
 
-cooldown3：根据  f0_i > f1_i > b1_i ≥ m > b0_i 
+cooldown3：根据  `f0_i > f1_i > b1_i ≥ m > b0_i` 
 
-得到  m+2p-1-i > x ≥ m+p，故 (, , ,B0)  有 p-1-i个
+得到  `m+2p-1-i > x ≥ m+p`，故 `(, , , B0)`  有 p-1-i个
 
 和DualPipe中warmup阶段的类似，上面也是一个可行的调度策略，但是会存在一些气泡。为了压缩气泡，使用了zero bubble切分BW的策略，优先B的计算和传递，用W来填充气泡。
 
@@ -547,22 +547,22 @@ cooldown3：根据  f0_i > f1_i > b1_i ≥ m > b0_i
 
 压缩气泡后的cooldown方案在上图用红线隔开，4个阶段如下：
 
-cooldown1：(, B1, F1, B0) 做p-1-i个，不使用zero bubble的BW切分
+cooldown1：`(, B1, F1, B0)` 做p-1-i个，不使用zero bubble的BW切分
 
-cooldown2: （, B1, , B0）做 i+1 个。总共有 2(i+1)个B，其中前i+1个B不做zero bubble切分，后i+1个B做zero bubble切分为 B’ + W，并且只算切分后的B’，即
+cooldown2: `（, B1, , B0）`做 `i+1` 个。总共有 2(`i+1`)个B，其中前i+1个B不做zero bubble切分，后i+1个B做zero bubble切分为 B’ + W，并且只算切分后的B’，即
 
 - B不做zero bubble切分，做i+1个
 - 做zero bubble切分后的B’，做i+1个，遗留 W共i+1个
 
-cooldown3:  这里同样做zero bubble切分，并优先处理上一轮遗留的W，即  (, , ,W+B0’) ，做 p-1-i 个。
+cooldown3:  这里同样做zero bubble切分，并优先处理上一轮遗留的W，即  `(, , , W+B0’)` ，做 p-1-i 个。
 
-cooldown4：最后将剩余的 i+1个W进行反向计算。
+cooldown4：最后将剩余的 `i+1`个W进行反向计算。
 
 ### DualPipeV的代码实现
 
 DeepSeek的DualPipeV的[实现代码](https://github.com/deepseek-ai/DualPipe/blob/3da1bbea53606543d7f5f232338fc58096db30e3/dualpipe/dualpipev.py#L330C11-L330C11)，可以与此对照。
 
-```bash
+```python
         # warmup阶段省略
 
         # Step 4 (Main step): nF0B1F1B0
