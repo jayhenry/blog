@@ -494,7 +494,7 @@ cooldown阶段可以类似分析，会逐步做  `(, B1, F1, B0)` 、 `(, B1, , 
 
 其中需要注意，warmup 3阶段使用了ZB-H1中提到的BW分离技术，目的是为了做通信计算重叠，同时加速反向计算块结果传递给下一个stage，对应代码已经注释说明。
 
-最后，值得一提的是，前面分析时提到只分析上半部分，下半部分对称得到相关结果即可。这个对称操作如下，分布在各种需要使用phase的函数里，比如 [`_forward_backward_compute_chunk`函数](https://github.com/deepseek-ai/DualPipe/blob/3da1bbea53606543d7f5f232338fc58096db30e3/dualpipe/dualpipe.py#L132)中
+最后，值得一提的是，前面分析时提到只分析上半部分，下半部分对称得到相关结果即可。这个对称操作如下，分布在各种需要使用phase的函数里，比如 `_forward_backward_compute_chunk`[函数](https://github.com/deepseek-ai/DualPipe/blob/3da1bbea53606543d7f5f232338fc58096db30e3/dualpipe/dualpipe.py#L132)中
 
 ```python
 phase0 ^= self.is_in_second_half
