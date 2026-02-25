@@ -17,7 +17,9 @@
 
 ![image.png](image.png)
 
-对于这类没有virtual device的调度，有通用规则，即必须满足：
+这里简单说明 **stage** 概念，它是指模型按层切分后分配到某个设备上的一段连续层，每个 device 负责一个 stage，stage 编号与 device 编号一一对应（如 device 0 对应 stage 0）。数据（microbatch）在前向时依次流过 stage 0 → 1 → … → p-1，反向时则反向流动。例如，一个 12 层的模型在 p=4 时，layer 0-2 构成 stage 0（device 0），layer 3-5 构成 stage 1（device 1），以此类推。
+
+对于1F1B这类没有virtual device的调度，有通用规则，即必须满足：
 
 1. 单batch的stage内顺序：对于某1个microbatch，在某1个stage内，必须遵循 F B(W)的顺序。如图中，对于microbatch0，device0上，蓝色的F在前，青色的B（包含B、W）在后。
 2. 多batch的stage内顺序：在某个stage内，同样的计算单元，小的micro batch序号都在大序号前面。比如在device 2上，计算单元F按序号0-7排列，计算单元B也按序号0-7排列。
@@ -64,7 +66,9 @@
 
 ### 1F1B的Megatron代码实现
 
-在[Megatron 1F1B 实现](https://github.com/NVIDIA/Megatron-LM/blob/861a8fa2d521761c435b69ccbe022511f7713d45/megatron/core/pipeline_parallel/schedules.py#L1827)中可以看到上述规律，核心代码如下
+在[Megatron 1F1B 实现](https://github.com/NVIDIA/Megatron-LM/blob/861a8fa2d521761c435b69ccbe022511f7713d45/megatron/core/pipeline_parallel/schedules.py#L1827)中可以看到上述规律，核心代码如下。
+
+备注：本文初稿写于2025年5月，本节和其他章节相关代码（Megatron, zero_bubble, DualPipe）都是当时的版本。
 
 ```python
 def forward_backward_pipelining_without_interleaving():
