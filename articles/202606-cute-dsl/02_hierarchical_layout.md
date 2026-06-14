@@ -31,7 +31,7 @@ def example_row_major_2x4():
 
 格内数字为映射到的一维线性索引。
 
-![(2,4) 行主序](img/02_row_major_2x4.svg)
+![(2,4) 行主序](img/02_row_major_2x4.jpg)
 
 ---
 
@@ -66,11 +66,11 @@ def example_shape_2_2x2():
 
 - **`flatten_hierarchical=False`**：画出 **tile块 边界**（粗蓝线），外层块下标（蓝色）与块内层元素下标（黑色）用不同颜色区分，突出层次。
 
-![(2,(2,2)) 嵌套边界](img/02_hierarchical_2_2x2_nested.svg)
+![(2,(2,2)) 嵌套边界](img/02_hierarchical_2_2x2_nested.jpg)
 
 - **`flatten_hierarchical=True`**：压成一张平面网格。左侧行号是最左下标 $i$；顶部列号不是原始的二维坐标 $(j,k)$，而是 $(j,k)$ 被压平后的一维坐标。二维坐标和一维坐标的转换关系见下一节。
 
-![(2,(2,2)) 扁平网格](img/02_hierarchical_2_2x2_flat.svg)
+![(2,(2,2)) 扁平网格](img/02_hierarchical_2_2x2_flat.jpg)
 
 ## Layout维护两种映射：坐标映射和索引映射
 
@@ -138,9 +138,9 @@ def example_shape_2x2_2():
     display_layout(layout, flatten_hierarchical=True)
 ```
 
-![((2,2),2) 嵌套边界](img/02_hierarchical_2x2_2_nested.svg)
+![((2,2),2) 嵌套边界](img/02_hierarchical_2x2_2_nested.jpg)
 
-![((2,2),2) 扁平网格](img/02_hierarchical_2x2_2_flat.svg)
+![((2,2),2) 扁平网格](img/02_hierarchical_2x2_2_flat.jpg)
 
 ---
 
@@ -168,9 +168,9 @@ def example_shape_2x2_3x4():
     display_layout(layout, flatten_hierarchical=True)
 ```
 
-![((2,2),(3,4)) 嵌套边界](img/02_hierarchical_2x2_3x4_nested.svg)
+![((2,2),(3,4)) 嵌套边界](img/02_hierarchical_2x2_3x4_nested.jpg)
 
-![((2,2),(3,4)) 扁平网格](img/02_hierarchical_2x2_3x4_flat.svg)
+![((2,2),(3,4)) 扁平网格](img/02_hierarchical_2x2_3x4_flat.jpg)
 
 ---
 

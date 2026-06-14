@@ -58,7 +58,7 @@ def example_col_major():
 
 比如线程 T1 中 V1 元素 (T1,V1) 在 tile 中的二维下标为 (3,0)，由于是列主序，其一维索引为 3。
 
-![列主序线程网格对应的 TV 布局（$8\times 15$ tile）](img/03_col_major_tv.svg)
+![列主序线程网格对应的 TV 布局（$8\times 15$ tile）](img/03_col_major_tv.jpg)
 
 ---
 
@@ -230,7 +230,7 @@ def example_row_major():
     display_tv_layout(tv_layout, tiler_mn)
 ```
 
-![行主序线程网格对应的 TV 布局](img/03_row_major_tv.svg)
+![行主序线程网格对应的 TV 布局](img/03_row_major_tv.jpg)
 
 ---
 
@@ -285,7 +285,7 @@ def example_tv_8x8():
     display_tv_layout(tv_layout, tile_mn)
 ```
 
-![$8\times 8$ tile上三维 thread × 三维 value 的 TV 布局](img/03_tv_8x8_nested_dims.svg)
+![$8\times 8$ tile上三维 thread × 三维 value 的 TV 布局](img/03_tv_8x8_nested_dims.jpg)
 
 ---
 
