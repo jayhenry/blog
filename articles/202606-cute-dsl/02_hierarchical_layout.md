@@ -176,5 +176,10 @@ def example_shape_2x2_3x4():
 
 ## 小结
 
-- 嵌套 `shape` / `stride` 用同一套 `make_layout` 表达分块结构；`rank`、`size`、`depth` 帮助判断维数、元素个数与是否分层。
-- **cute-viz** 嵌套视图（`flatten_hierarchical=False`）中，**最左下标**按**块内层**着色（黑），与「块」层（蓝）相对。实际解读时，可以有不同的顺序，不必与cute-viz图相同。
+这一篇把普通 `Layout` 扩展到嵌套 `shape` / `stride`：嵌套不是新的机制，而是用同一套坐标到索引的规则，表达更有层次感的块结构。
+
+* 嵌套 `shape` / `stride` 仍然用 `cute.make_layout` 构造；`rank` 看最外层维数，`size` 看元素总数，`depth` 看某个 mode 内部是否还有子结构。
+* 嵌套 Layout 同时维护两类映射：先把 1-D、2-D 等非自然坐标按 LayoutLeft 规则还原为自然坐标，再用自然坐标和 `stride` 计算线性 index。
+* `flatten_hierarchical=False` 保留层次边界，图中蓝字表示块坐标，黑字表示块内坐标；这适合观察 tile 的分层结构。
+* `flatten_hierarchical=True` 把嵌套坐标压成平面坐标，但不会改变 Layout 的索引规则；它只是把自然坐标对应的 index 填到一个更容易对照的平面网格里。
+* 同一个嵌套布局可以有多种叙述角度。读图时以坐标映射和索引映射为准，不必把 cute-viz 的展示顺序当成唯一解释。

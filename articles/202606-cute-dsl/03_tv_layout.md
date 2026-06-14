@@ -286,3 +286,15 @@ def example_tv_8x8():
 ```
 
 ![$8\times 8$ tile上三维 thread × 三维 value 的 TV 布局](img/03_tv_8x8_nested_dims.svg)
+
+---
+
+## 小结
+
+这一篇把 `Layout` 用到线程和值的分配上：TV layout 描述的是每个线程、每个线程内 value，分别落到 tile 的哪个位置。
+
+* `cute.make_layout_tv(thr_layout, val_layout)` 会把线程布局和每线程 value 布局合成为一个 TV layout，形式上是 $(\text{thread\_idx},\text{value\_idx}) \to \text{tile index}$。
+* 实际访存时，TV layout 的输出还要交给 Tensor 自身的 layout；也就是先决定「访问 tile 中哪个元素」，再由 Tensor 决定「这个元素在真实内存哪里」。
+* `cute.composition(a, tv_layout)` 可以把 TV layout 和 Tensor A 的访问规则复合起来，直接得到按 thread / value 视角访问的 `tv_a`。
+* TV layout 的可视化画的是从 tile 网格反查到 thread / value 的关系，因此图上的二维排布不一定等于 TV layout 元组里 thread 域、value 域的 shape。
+* 高维嵌套的 thread / value 布局可以表达更复杂的交错访问模式，是后续理解 MMA、ldmatrix 和高效 GEMM 数据排布的基础。

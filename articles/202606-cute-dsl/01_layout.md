@@ -87,3 +87,14 @@ def example_default_compact_2x4():
 同一组逻辑坐标下，行下标 $i$ 与列下标 $j$ 对地址的贡献与前面的行主序例子不同，遍历顺序表现为列主序风格的索引排列。
 
 ![(2,4) 默认紧凑布局](img/02_col_major_2x4.svg)
+
+---
+
+## 小结
+
+这一篇先建立 CuTe DSL 里最基础的 `Layout` 概念：`shape` 决定合法坐标范围，`stride` 决定每个坐标分量对线性索引的贡献。
+
+* `Layout` 本质上是从逻辑坐标到一维索引的映射。
+* 同一个 `shape` 配不同 `stride`，会得到不同的内存访问模式；例如紧密行主序和带 padding 的行主序。
+* 不显式指定 `stride` 时，`cute.make_layout` 默认生成紧凑左端主序，也就是列主序风格的布局。
+* `cute-viz` 可以把坐标到索引的关系直接画出来，后续理解嵌套 layout、TV layout 和 GEMM 分块时都会反复用到这个视角。
