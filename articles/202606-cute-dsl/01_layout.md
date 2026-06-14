@@ -1,5 +1,13 @@
 # CuTeDSL 01：`Layout` 与 `make_layout` 入门
 
+## 前言
+
+这个系列会系统介绍 CuTe DSL 的基本使用：从 `Layout`、`Tensor`、TV layout、layout algebra 等基础概念开始，逐步过渡到数据搬运、MMA等实现细节，最后用 CuTe DSL 完成一个高效 GEMM。
+
+CuTe DSL 的抽象层次比较高，很多概念只看公式和代码不够直观。因此，本文会尽量配合图示说明：先把每个布局、坐标映射和线程分工画出来，再对应到代码实现。这样既能更容易理解单个 API 的行为，也能把后续 GEMM 实现中用到的基础知识串成一个完整体系。
+
+## `Layout` 是什么
+
 在 CUTLASS 的 CuTe 抽象里，**Layout** 描述的是「逻辑多维坐标」到「一维地址（或索引）」的映射。它把张量的形状（各维长度）与步长（沿各维前进时在地址上跳多少）绑在一起，是后续 Tensor、TMA、GEMM 分块等话题的基础。
 
 官方 C++ 文档对概念与记号有系统说明：[CuTe — Layout](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/01_layout.html)。
@@ -60,7 +68,6 @@ cute-viz                           0.1.0
 
 ![shape (8,8), stride (10,1)](img/01_layout_8x8_stride_10_1.svg)
 
-
 ## 默认紧凑布局：$(2,4)$ 与「列主序」
 
 只写 `cute.make_layout((2, 4))` 而不显式给 `stride` 时，DSL 会生成**紧凑左端主序**（compact left-most）即列主序的默认步长。对 $(2,4)$ 而言，常见打印结果为 $(2,4):(1,2)$，即
@@ -80,4 +87,3 @@ def example_default_compact_2x4():
 同一组逻辑坐标下，行下标 $i$ 与列下标 $j$ 对地址的贡献与前面的行主序例子不同，遍历顺序表现为列主序风格的索引排列。
 
 ![(2,4) 默认紧凑布局](img/02_col_major_2x4.svg)
-
