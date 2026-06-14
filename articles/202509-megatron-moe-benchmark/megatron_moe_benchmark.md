@@ -2,9 +2,9 @@
 
 ## 前言
 
-在2025年9月我作为“蓝军”在Megatron上针对Qwen3 235B MoE模型训练进行了较为充分地速度调优。然而Megatron的速度仍然慢于当时xtuner框架的速度，具体见[xtuner v1 介绍文章](https://mp.weixin.qq.com/s/_ThFxekq291-y5iuxkc55A)。整个的调优过程也挺有意思，可以看下面的具体介绍。
+2025年9月，我作为“蓝军”对Megatron训练Qwen3-235B-A22B MoE模型做了一轮较系统的性能调优。最终，Megatron的训练速度仍低于当时xtuner框架的结果，具体对比可以参考[xtuner v1 介绍文章](https://mp.weixin.qq.com/s/_ThFxekq291-y5iuxkc55A)。不过这轮调优过程本身很值得记录：它涉及混合并行策略、显存估算、通信重叠、重计算、EP负载均衡等多个关键问题，也能帮助理解Megatron MoE训练的主要性能瓶颈。
 
-现在的[xtuner](https://github.com/internLM/xtuner)已经更快更全面，支持 Pretrain, SFT, RL, Fully-Async RL, Agentic RL等 LLM, VLM 训练全流程。欢迎 star 试用。
+目前的[xtuner](https://github.com/internLM/xtuner)已经覆盖更完整的训练流程，支持 Pretrain、SFT、RL、Fully-Async RL、Agentic RL 等 LLM/VLM 训练场景。欢迎 star 和试用。
 
 ## 大模型训练速度调优思路
 
