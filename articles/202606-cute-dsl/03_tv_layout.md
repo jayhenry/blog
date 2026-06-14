@@ -1,0 +1,288 @@
+# CuTeDSL 03：Thread–Value（TV）Layout 与可视化
+
+**Thread–value partitioning** 描述「每个线程持有哪些槽位」：把线程下标与线程内的 value 下标一起，映射到某个数据块（tile）上。它的作用是方便用线程下标和线程内value下标，来得到某个元素在这个数据块上的一维线性地址。
+
+它通常再与张量自身的内存 layout 做复合运算，得到实际访存模式。概念与记号以官方说明为准：[CuTe — Tensor：Thread–value partitioning](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/03_tensor.html#thread-value-partitioning)。
+
+在 CuTe DSL 中，常用 `cute.make_layout_tv(thr_layout, val_layout)` 由**线程布局**与**每线程 value 布局**生成：
+
+- `tiler_mn`：这一组线程覆盖的全体数据形成的二维 tile 形状，通常记为 $(M,N)$
+- **TV layout**：把线程下标和线程内value下标 $(t,v)$ 映到 tile 内一维线性索引
+
+```python
+from cutlass import cute
+import cutlass
+from cute_viz import render_tv_layout_svg, display_tv_layout
+```
+
+---
+
+## 列主序风格的线程网格：`make_layout_tv`
+
+看一个具体的例子：
+
+- 取 $4\times 5$ 的线程网格，步长 $(1,4)$，即二维线程编号按**列主序**展开；
+- 每个线程再持有 $2\times 3$ 个 value，value 子布局步长 $(1,2)$。
+
+所以，这20个线程一共持有 $8\times15$ 个value 的块（tile）。
+
+二者通过 `make_layout_tv` 合成后，典型打印为：
+
+- tile $(8,15)$
+- TV layout 形状 $((4,5),(2,3))$，步长 $((2,24),(1,8))$
+
+下例打印 $(T_i,V_j)$ 到 tile 坐标的对应关系，并输出可视化关系图。
+
+```python
+@cute.jit
+def example_col_major():
+    thr_layout = cute.make_layout((4, 5), stride=(1, 4))
+    val_layout = cute.make_layout((2, 3), stride=(1, 2))
+    tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
+
+    thread_size = cute.size(thr_layout)
+    value_size = cute.size(val_layout)
+    m, n = tiler_mn
+    for i in cutlass.range_constexpr(thread_size):
+        for j in cutlass.range_constexpr(value_size):
+            idx = tv_layout((i, j))
+            tiler_i = idx % m
+            tiler_j = idx // m
+            print(f"(T{i}, V{j})->({tiler_i},{tiler_j})={idx}", end=" ")
+        print()
+
+    display_tv_layout(tv_layout, tiler_mn)
+```
+
+图中横纵轴为 tile 上的坐标网格，每个格内标注该位置对应的线程号与 value 号（颜色区分线程）。
+
+比如线程 T1 中 V1 元素 (T1,V1) 在 tile 中的二维下标为 (3,0)，由于是列主序，其一维索引为 3。
+
+![列主序线程网格对应的 TV 布局（$8\times 15$ tile）](img/03_col_major_tv.svg)
+
+---
+
+## 与 `make_layout_tv` 等价的显式 TV layout
+
+同一 TV 关系也可以直接写出分层 shape / stride，无需先构造 `thr_layout`与 `val_layout`：
+
+$$
+\text{shape}=((4,5),(2,3)),\quad \text{stride}=((2,24),(1,8))
+
+$$
+
+```python
+@cute.jit
+def example_col_major_manual():
+    tiler_mn = (8, 15)
+    tv_layout = cute.make_layout(((4, 5), (2, 3)), stride=((2, 24), (1, 8)))
+    thread_size = cute.size(tv_layout[0])
+    value_size = cute.size(tv_layout[1])
+    m, n = tiler_mn
+    for i in cutlass.range_constexpr(thread_size):
+        for j in cutlass.range_constexpr(value_size):
+            idx = tv_layout((i, j))
+            tiler_i = idx % m
+            tiler_j = idx // m
+            print(f"(T{i}, V{j})->({tiler_i},{tiler_j})={idx}", end=" ")
+        print()
+    display_tv_layout(tv_layout, tiler_mn)
+```
+
+与前一节语义相同（仅构造路径不同），`display_tv_layout` 得到的图与上一节一致。
+
+---
+
+## tv layout的实际应用模式以及layout复合函数
+
+参考：https://docs.nvidia.com/cutlass/media/docs/cpp/cute/03_tensor.html#thread-value-partitioning
+
+实际使用场景：需要访问一个矩阵A，不同thread访问矩阵A的不同部分。
+
+```code
+foreach thread_idx:
+  foreach value_idx_in_cur_thread:
+    idx = tv_compute_idx(thread_idx, value_idx)
+    A(idx)
+```
+
+其中，`A(idx)` 从 `idx` 到实际内存地址的映射，由 Tensor A 自身的 layout（行主序、列主序，或者 A 是某个更大矩阵的分片等）负责。
+
+在 CuTe 中，一个 Tensor 可以看作两个部分的复合：
+
+1. **Engine**（记作 $E$）：类似可随机访问指针的对象，支持两个基本操作：
+   * 偏移操作：`e + d -> e`，按照 layout 值域中的元素偏移 engine；
+   * 解引用操作：`*e -> v`，读取 engine 当前指向位置的值。
+2. **Layout**（记作 $L$）：定义从逻辑坐标到偏移量的映射。
+
+形式上，Tensor 是 Engine 和 Layout 的复合，可以写成 $T = E \circ L$。当用坐标 $c$ 访问 Tensor 时，会先用 layout 把 $c$ 映射到偏移量，再把 engine 偏移到对应位置，最后解引用得到值：
+
+$$
+T(c) = (E \circ L)(c) = *(E + L(c))
+
+$$
+
+所以，上面的 `A(idx)` 不是单纯的数组下标访问，而是一次 Tensor 访问：`idx` 先经过 Tensor A 自身的 layout 变成 offset，再由 A 的 engine 找到并读取真实值。
+
+而 `tv_compute_idx(thread_idx, value_idx)` 则由 TV layout 负责。
+因为先应用 `tv_compute_idx()`，再应用 `A()`，所以也可以先构造这两个映射的复合函数，然后直接用这个复合函数来寻址：
+
+```code
+TV_A(thread_idx, value_idx) = A(tv_compute_idx(thread_idx, value_idx))
+```
+
+下面两个例子先后展示了两种做法，使用的也是参考链接中的数据。
+
+```python
+from cutlass.cute.runtime import from_dlpack
+import torch
+
+@cute.jit
+def tensor_tv_layout(a: cute.Tensor):
+    # Tensor: (M4,N8)
+    cute.printf("a = ")
+    cute.print_tensor(a)
+    # Construct a TV-layout that maps 8 thread indices and 4 value indices
+    # to 1D coordinates within a 4x8 tensor
+    # tv_layout: (T8,V4) 
+    tv_layout = cute.make_layout(((2,4), (2,2)), stride=((8,1), (4,16)))
+    print(f"tv_layout = {tv_layout}")
+    # tv_a = cute.composition(a, tv_layout)
+    # cute.printf("tv_a = ")
+    # cute.print_tensor(tv_a)
+
+    for thread_idx in range(8):
+        #                           value_idx
+        v0 = a[tv_layout((thread_idx, 0))]
+        v1 = a[tv_layout((thread_idx, 1))]
+        v2 = a[tv_layout((thread_idx, 2))]
+        v3 = a[tv_layout((thread_idx, 3))]
+        cute.printf("thread_idx = {}, tv_a slice = {}, {}, {}, {}", thread_idx, v0, v1, v2, v3)
+
+def tv_layout_app():
+    a = torch.arange(32).reshape(8,4).transpose(0,1)
+    print(f"torch tensor = \n{a}")
+    tensor_tv_layout(from_dlpack(a))
+```
+
+```python
+tv_layout_app()
+```
+
+第二个例子使用复合函数 `cute.compose` 来做同样的事情。
+
+```python
+from cutlass.cute.runtime import from_dlpack
+import torch
+
+@cute.jit
+def tensor_tv_layout(a: cute.Tensor):
+    # Tensor: (M4,N8)
+    cute.printf("a = ")
+    cute.print_tensor(a)
+    # Construct a TV-layout that maps 8 thread indices and 4 value indices
+    # to 1D coordinates within a 4x8 tensor
+    # tv_layout: (T8,V4) 
+    tv_layout = cute.make_layout(((2,4), (2,2)), stride=((8,1), (4,16)))
+    print(f"tv_layout = {tv_layout}")
+    tv_a = cute.composition(a, tv_layout)
+    cute.printf("tv_a = ")
+    cute.print_tensor(tv_a)
+
+    for thread_idx in range(8):
+        cute.printf("thread_idx = {}, tv_a slice = {}", thread_idx, tv_a[(thread_idx, None)])
+
+def tv_layout_app2():
+    a = torch.arange(32).reshape(8,4).transpose(0,1)
+    print(f"torch tensor = \n{a}")
+    tensor_tv_layout(from_dlpack(a))
+```
+
+```python
+tv_layout_app2()
+```
+
+---
+
+## 行主序风格的线程网格
+
+将线程布局改为行主序 $(4,5):(5,1)$，value 布局 $(2,3):(3,1)$，则 `make_layout_tv` 给出的 TV layout 形如 $((5,4),(3,2)):((24,2),(8,1))$，tile 仍为 $(8,15)$。画图与打印方式与列主序例子相同。
+
+```python
+@cute.jit
+def example_row_major():
+    thr_layout = cute.make_layout((4, 5), stride=(5, 1))
+    val_layout = cute.make_layout((2, 3), stride=(3, 1))
+    tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
+    print(f"TV Layout: {tv_layout}")  # ((5,4),(3,2)):((24,2),(8,1))
+
+    thread_size = cute.size(thr_layout)
+    value_size = cute.size(val_layout)
+    m, n = tiler_mn
+    for i in cutlass.range_constexpr(thread_size):
+        for j in cutlass.range_constexpr(value_size):
+            idx = tv_layout((i, j))
+            tiler_i = idx % m
+            tiler_j = idx // m
+            print(f"(T{i}, V{j})->({tiler_i},{tiler_j})={idx}", end=" ")
+        print()
+
+    display_tv_layout(tv_layout, tiler_mn)
+```
+
+![行主序线程网格对应的 TV 布局](img/03_row_major_tv.svg)
+
+---
+
+## 为何 TV layout 里线程域的「形状」和图上排列不一致？
+
+行主序一例中，打印出的 TV layout `((5,4),(3,2)):((24,2),(8,1))` 线程半区形状是 $(5,4)$，而 `display_tv_layout`仍按原始`thr_layout` 的 $(4,5)$ 网格直觉来排布线程块。类似地，TV layout中value形状是 $(3,2)$，而展示出来也仍按原始 `val_layout`的 $(2,3)$来排布。这是为什么？
+
+CuTeDSL 官方Notebook示例：[elementwise_add.ipynb](https://github.com/NVIDIA/cutlass/blob/main/examples/python/CuTeDSL/cute/notebooks/elementwise_add.ipynb) 中 “***Why modes of thread domain of TV Layout looks swapped especially when tensor is row major?***” 一节的讨论做了下面的回答。
+
+> It's important to keep in mind that *TV Layout* maps `(thread_index, value_index)` to `(row_index, column_index)` of logical domain `(TileM, TileN)`. However, visualization shows **inverse** mapping of logical domain `(TileM, TileN)` to `(thread_domain, value_domain)`, because this is more intuitive for human developer.
+>
+> That's why the shape of domain of *TV Layout* doesn't necessarily match logical view.
+
+原因在于**TV layout 定义的是** $(\text{thread\_index},\text{value\_index})\to(\text{tile 内坐标})$**的正向映射**；**可视化则采用从 tile 逻辑域到「线程域 × value 域」的逆映射**，便于人眼对照「这一格是谁的哪个 value」。
+
+因此，layout 元组里 thread 部分的 shape 不必与图上线程块的二维排布数字顺序一致。
+
+上面官方的解释不容易理解，这里再做更通俗的解释。
+
+前两篇文章，我们看到了很多普通 layout 的可视化，但是注意前面可视化图中横纵坐标就是layout的坐标，而网格中数值为layout的一维索引。关于坐标和索引的概念，见上一篇文章“坐标映射和索引映射”一节，这里也可以简单理解为坐标是layout的输入，一维索引是layout的输出。
+
+而 TV Layout 可视化的特别之处在于，图中横纵坐标不再是layout的坐标，因此它不必与layout的坐标形状一致。实际上，图中的横纵坐标是layout输出的索引，并且是将一维索引按列主序展开成二维索引。
+
+为什么是按“列主序”展开成二维索引，而不是按“行主序”展开呢？
+
+在前面实际应用模式中，我们看到 TV layout 输出的索引，本身是要传递给Tensor A自身的layout，作为Tensor A layout的输入坐标。假设A layout是二维矩阵，从A的视角看它的输入坐标从二维到一维的转换关系是“列主序”的。这再次使用到了上一篇文章“坐标映射和索引映射”的基础知识。
+
+---
+
+## 高维嵌套的 thread / value：$8\times 8$ 示例
+
+下面与 [cute-viz 的 tv_layout 示例](https://github.com/NTT123/cute-viz/blob/main/examples/tv_layout_example.py) 类似：thread 与 value 各自为 $(2,2,2)$ 的三维嵌套，通过给定 stride 定义到 $8\times 8$ tile 的映射。可视化图如下。这不再是简单的连续排布，而是线程和value互相交错的一种排布，后面可以看到一些tensor core的mma算子会要求类似地排布。
+
+```python
+@cute.jit
+def example_tv_8x8():
+    tile_mn = (8, 8)
+    tv_layout = cute.make_layout(
+        shape=((2, 2, 2), (2, 2, 2)),
+        stride=((1, 16, 4), (8, 2, 32)),
+    )
+    thread_size = cute.size(tv_layout[0])
+    value_size = cute.size(tv_layout[1])
+    m, n = tile_mn
+    for i in cutlass.range_constexpr(thread_size):
+        for j in cutlass.range_constexpr(value_size):
+            idx = tv_layout((i, j))
+            tiler_i = idx % m
+            tiler_j = idx // m
+            print(f"(T{i}, V{j})->({tiler_i},{tiler_j})={idx}", end=" ")
+        print()
+    display_tv_layout(tv_layout, tile_mn)
+```
+
+![$8\times 8$ tile上三维 thread × 三维 value 的 TV 布局](img/03_tv_8x8_nested_dims.svg)
