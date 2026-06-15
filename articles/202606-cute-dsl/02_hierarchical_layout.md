@@ -1,4 +1,4 @@
-# CuTeDSL 02：分层（嵌套）`Layout`
+# 动手学CuTeDSL 02：分层（嵌套）`Layout`
 
 普通二维布局把 `shape` 写成 $(M, N)$、`stride` 写成 $(s_0, s_1)$ 即可。CuTe 还允许 **`shape` 与 `stride` 在某一维上再嵌套元组**，用来表达「块 / tile / 子布局」的层次结构：外层下标选大块，内层下标在块内再细分。概念与记号仍以官方说明为准：[CuTe — Layout](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/01_layout.html)。
 

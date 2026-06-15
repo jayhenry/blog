@@ -1,4 +1,4 @@
-# CuTeDSL 03：Thread–Value（TV）Layout 与可视化
+# 动手学CuTeDSL 03：Thread–Value（TV）Layout 与可视化
 
 **Thread–value partitioning** 描述「每个线程持有哪些槽位」：把线程下标与线程内的 value 下标一起，映射到某个数据块（tile）上。它的作用是方便用线程下标和线程内value下标，来得到某个元素在这个数据块上的一维线性地址。
 

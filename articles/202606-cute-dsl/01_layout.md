@@ -1,4 +1,4 @@
-# CuTeDSL 01：`Layout` 与 `make_layout` 入门
+# 动手学CuTeDSL 01：`Layout` 与 `make_layout` 入门
 
 ## 前言
 
