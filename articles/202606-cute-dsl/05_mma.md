@@ -1,23 +1,43 @@
 # 动手学 CuTeDSL 05：MMA Atom、`TiledMMA`、`atom_layout_mnk` 与 `permutation_mnk`
 
-TODO：gemm 有多种实现， cuda core， tensor core的， tensor core也有迭代不同版本的实现，warp level的， warp group level的，tensorcore 5th generation等等。本文重点介绍 warp level mma 和 cuda core。
+CuTe 里和 GEMM 计算最相关的一组对象，是 **MMA Atom** 与它向上组成的 **`TiledMMA`**。这里的 MMA 不只指 Tensor Core 指令，也可以表示 CUDA core 上的标量 FMA。CuTe 文档把 MMA Atom 放在多个硬件层级上理解：
 
-CuTe 里和 Tensor Core GEMM 最相关的一组对象，是 **MMA Atom** 与它向上组成的 **`TiledMMA`**。
+| 层级 | 典型硬件/指令 | 直观含义 |
+| --- | --- | --- |
+| single thread | CUDA core FP32 FMA，例如 PTX `fma.f32` | 一个线程独立做标量乘加 |
+| quadpair | 更小线程组上的矩阵乘累加抽象，常见于部分 Tensor Core 指令建模 | 少量线程协作完成一个 atom |
+| warp | warp-level Tensor Core MMA，例如 PTX `mma.sync` | 一个 warp 的 32 个线程共同完成一个矩阵乘累加 |
+| warpgroup | Hopper 及之后的 WGMMA，例如 `wgmma.mma_async` | 多个 warp 组成 warpgroup，共同驱动更大的 Tensor Core MMA |
 
-- **MMA Atom** 对应一条底层 warp-level MMA 指令的寄存器分工；
+更新的 GPU 架构还会继续扩展 Tensor Core 的执行模型，例如 Blackwell 上的第五代 Tensor Core / `tcgen05` 相关能力。它们的编程接口和同步模型会更复杂，但在 CuTe 里仍然可以放进“某个硬件层级上的 MMA Atom，再向上组合成 `TiledMMA`”这条主线里理解。
+
+本文重点介绍两类最容易建立心智模型的情况：
+
+- **warp-level Tensor Core MMA**：它最符合通常说的 MMA Atom 抽象，一个 warp 按固定 fragment 规则协作执行矩阵指令；
+- **CUDA core MMA**：它可以看成大小接近 `1x1x1` 的 single-thread MMA 特例，每个线程用 FP32 FMA 完成自己负责的累加。
+
+贯穿这两类实现的核心对象是：
+
+- **MMA Atom** 对应某个硬件层级上的最小乘加计算单元，以及它要求的线程/寄存器分工；
 - **`TiledMMA`** 则是在这个 atom 之上，继续沿 $M/N/K$ 方向做复制、重排与扩展，得到一个更大的逻辑计算单元。
 
-本文围绕 `SM80` 上常见的 `16x8x8` MMA 例子，说明：
+前半部分先围绕 `SM80` 上常见的 `16x8x8` warp-level MMA 例子，说明：
 
 1. `display_tiled_mma` 展示的到底是什么；
 2. `thread_mma.get_slice()` 如何把一个 tile 切成线程级任务；
 3. `atom_layout_mnk` 如何在 $M/N/K$ 三个方向复制 MMA atom；
 4. `permutation_mnk` 如何在不改变单次 MMA 语义的前提下，重排更大 tile 内的逻辑坐标。
 
+最后再回到 `ampere/sgemm.py` 中的 CUDA core SGEMM，说明同一套 `TiledMMA` 抽象如何落到每个线程自己的 FP32 FMA 上。
+
 参考资料：
 
 - [CuTe MMA atoms](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/0t_mma_atom.html)
 - [PTX warp-level matrix instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-instructions-for-mma)
+- [PTX warpgroup-level matrix instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/#asynchronous-warpgroup-level-matrix-multiply-accumulate-instructions)
+- [PTX TensorCore 5th Generation family instructions](https://docs.nvidia.com/cuda/parallel-thread-execution/#tensorcore-5th-generation-family-instructions)
+- [PTX floating point fma instruction](https://docs.nvidia.com/cuda/parallel-thread-execution/#floating-point-instructions-fma)
+- [CUTLASS Efficient GEMM in CUDA](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/efficient_gemm.html)
 - [cute-viz MMA example](https://github.com/NTT123/cute-viz/blob/main/examples/mma_atom_example.py)
 
 本文示例默认使用：
@@ -393,6 +413,187 @@ def mma_atom_and_permutation_demo():
 
 ---
 
+## CUDA Core MMA：用 FMA 组织 SIMT GEMM
+
+前面几节讲的是 Tensor Core 路线：一个 MMA atom 对应类似 `mma.sync` 这样的 warp-level 指令，32 个线程共同完成一个固定形状的矩阵乘累加。
+
+在Tensor Core硬件之前，是用CUDA core 来完成GEMM的。它的编程模型明显不同：底层不是 warp 协作的一条矩阵指令，而是每个线程在自己的寄存器里反复执行标量 FMA（乘加运算）。
+
+PTX 里的 `fma.f32` 语义可以写成：
+
+$$
+d = a \times b + c
+
+$$
+
+它会把乘法和加法作为 fused multiply-add 执行，中间乘积和加法不会在二者之间先舍入一次。也就是说，对 FP32 SGEMM 来说，最底层的计算单元可以理解为：
+
+```python
+acc = fma(a, b, acc)
+```
+
+这仍然可以被 CuTe 表达成 MMA，只是这个 atom 的硬件层级是 **single thread**，而不是一个 warp。
+
+### `MmaUniversalOp(Float32)`：单线程 FMA atom
+
+典型的单精度矩阵乘法`sgemm` 中使用的 CUDA core MMA 的核心是：
+
+```python
+op = cute.nvgpu.MmaUniversalOp(cutlass.Float32)
+
+tiled_mma = cute.make_tiled_mma(
+    op,
+    atom_layout_mnk,
+    permutation_mnk=(permutation_tiler_M, permutation_tiler_N, None),
+)
+```
+
+这里的 `MmaUniversalOp(Float32)` 可以理解为一个通用的 FP32 FMA atom。它不像 `MmaF16BF16Op(Float16, Float32, (16, 8, 8))` 那样描述一条 `16x8x8` Tensor Core 指令，而是描述“每个线程自己做一个标量累加”。
+
+因此，Tensor Core MMA 和 CUDA core MMA 的差别可以这样对比：
+
+
+| 路线        | 底层 atom                     | 线程协作方式   | 一次 atom 的直观含义              |
+| ------------- | ------------------------------- | ---------------- | ----------------------------------- |
+| Tensor Core | `MmaF16BF16Op(..., (16,8,8))` | 一个 warp 协作 | 32 个线程共同完成一个`16x8x8` MMA |
+| CUDA core   | `MmaUniversalOp(Float32)`     | 每个线程独立   | 一个线程执行若干 FP32 FMA         |
+
+### `atom_layout_mnk`：把线程排成一个 C tile
+
+既然单个 FMA atom 只属于一个线程，那么更大的输出 tile 就需要靠很多线程并排组成。这里继续沿用前文的命名，把这层线程组织称为 `atom_layout_mnk`：
+
+```python
+cta_tiler = (128, 128, 8)
+num_threads = 256
+
+atom_layout_mnk = cute.make_layout(
+    (num_threads // 16, 16, 1), stride=(16, 1, 0)
+)
+```
+
+当 `num_threads = 256` 时，`atom_layout_mnk.shape = (16, 16, 1)`，也就是把 256 个线程组织成一个 $16 \times 16$ 的线程网格。因为 `MmaUniversalOp` 的 atom 本身可以近似看成 `1x1x1`，所以这里的 `atom_layout_mnk` 同时也是 C tile 上的线程分布方式。
+
+如果 C 是列主序，脚本会把线程网格换一个方向：
+
+```python
+atom_layout_mnk = cute.make_layout(
+    (16, num_threads // 16, 1), stride=(1, 16, 0)
+)
+```
+
+这体现了 CUDA core MMA 的一个关键点：既然没有固定的 Tensor Core fragment 规则，线程和输出元素的对应关系就主要由 layout 决定。C 的主序不同，`partition_C(gC)` 生成的线程私有 C fragment 也不同；如果线程布局顺着 C 的连续维度展开，那么相邻线程写回 global memory 时更容易形成连续地址段。对行主序 C 来说，连续维度是 $N$；对列主序 C 来说，连续维度是 $M$。这里切换 `atom_layout_mnk` 的方向，本质上是在让 epilogue 的 store 尽量沿 C 的连续维度组织，减少跨步很大的分散写。
+
+### `permutation_mnk`：让每个线程拿连续的 4 个元素
+
+tile大小是$128 \times 128$，而线程数是 $16 \times 16$ 。所以每个线程在 M 和 N 方向上要负责 4 个元素，才能处理完整个tile。
+
+如果只把线程平铺到 C tile 上，每个线程负责的元素可能在逻辑上不够连续，不利于从 shared memory 拿 A/B，也不利于寄存器复用。所以要用 `permutation_mnk` 做一个很重要的重排：
+
+```python
+permutation_tiler_M = cute.make_layout(
+    (atom_layout_mnk.shape[0], 4), stride=(4, 1)
+)
+permutation_tiler_N = cute.make_layout(
+    (atom_layout_mnk.shape[1], 4), stride=(4, 1)
+)
+
+tiled_mma = cute.make_tiled_mma(
+    op,
+    atom_layout_mnk,
+    permutation_mnk=(permutation_tiler_M, permutation_tiler_N, None),
+)
+```
+
+这里的 `4` 可以理解为“让同一个线程在对应方向上拿到一组连续元素”。给一个直观的对比：按 tensor 中连续下标看，未重排时线程编号类似：
+
+```text
+0 1 2 ... 15 0 1 2 ... 15 0 1 2 ... 15 ...
+```
+
+重排后变成：
+
+```text
+0 0 0 0 1 1 1 1 2 2 2 2 ... 15 15 15 15 ...
+```
+
+也就是说，`permutation_mnk` 不是改变 FMA 的数学语义，而是改变“连续数据由哪个线程持有”。这样每个线程从 shared memory 到 register 的搬运更容易向量化，寄存器里的数据也更适合做连续的 FMA。
+
+### `partition_A/B/C`：把 CTA tile 切成线程私有 fragment
+
+进入 kernel 后，每个线程都会拿到自己的 MMA slice：
+
+```python
+tidx, tidy, tidz = cute.arch.thread_idx()
+thr_mma = tiled_mma.get_slice(tidx)
+```
+
+然后对 shared memory 中的 A/B，以及 global memory 中对应的 C tile 做分区：
+
+```python
+tCsA = thr_mma.partition_A(sA)
+tCsB = thr_mma.partition_B(sB)
+tCgC = thr_mma.partition_C(gC)
+
+tCrA = tiled_mma.make_fragment_A(tCsA[None, None, None, 0])
+tCrB = tiled_mma.make_fragment_B(tCsB[None, None, None, 0])
+tCrC = tiled_mma.make_fragment_C(tCgC)
+tCrC.fill(0.0)
+```
+
+这几行和前面 warp-level MMA 的 `thread_mma.get_slice()` 是同一个抽象：先从全局 tile 得到当前线程的视角，再构造寄存器 fragment。区别只在于：
+
+- Tensor Core 路线中，fragment 必须满足 warp-level MMA 指令的固定寄存器分工；
+- CUDA core 路线中，fragment 是当前线程私有的 A/B/C 小块，用来喂给后面的标量 FMA 序列。
+
+所以 `partition_A/B/C` 的价值不是“调用了 Tensor Core”，而是把一个 CTA 级别的 GEMM tile，系统地切成每个线程要加载、累加、写回的那部分数据。
+
+### 主循环：shared memory pipeline + register pipeline + FMA
+
+`sgemm` 的典型 CTA tile 是：
+
+$$
+(M,N,K)=(128,128,8)
+
+$$
+
+线程块每次处理一个 $128 \times 128$ 的 C 子块，并沿 K 方向以 8 为单位推进。主循环里真正做计算的是：
+
+```python
+cute.gemm(
+    tiled_mma,
+    tCrC,
+    tCrA[None, None, k_block],
+    tCrB[None, None, k_block],
+    tCrC,
+)
+```
+
+对 CUDA core MMA 来说，这里的 `cute.gemm` 会展开成当前线程寄存器 fragment 上的一串 FP32 FMA。一个直观的伪代码是：
+
+```python
+for k in k_fragment:
+    for m_value in thread_m_values:
+        for n_value in thread_n_values:
+            acc[m_value, n_value] = fma(a[m_value, k], b[n_value, k], acc[m_value, n_value])
+```
+
+为了让这串 FMA 尽量不断粮，脚本同时做了两层 pipeline：
+
+- **shared memory pipeline**：用 `cp.async` 把后续 K tile 从 global memory 提前搬到 shared memory，默认 `num_stages = 3`；
+- **register pipeline**：用 `cute.autovec_copy` 把下一个 `k_block` 的 A/B 从 shared memory 提前搬到寄存器，和当前 `k_block` 的 FMA 交错起来。
+
+因此，这个 CUDA core SGEMM 的核心并不是“写一个三重 for 循环”，而是：
+
+1. 先用 `cta_tiler` 固定 CTA 级别的工作块；
+2. 用 `atom_layout_mnk` 把线程组织成输出 tile 上的计算网格；
+3. 用 `permutation_mnk` 让每个线程拿到更连续、更适合寄存器复用的数据；
+4. 用 `partition_A/B/C` 生成线程私有 fragment；
+5. 在主循环里用 shared memory pipeline 和 register pipeline 喂满 CUDA core FMA。
+
+这和前面 Tensor Core MMA 的层次是对应的：`TiledMMA` 仍然负责“把大 tile 分给线程并组织寄存器 fragment”，只是最终落到底层时，Tensor Core 路线发出的是 warp-level MMA 指令，CUDA core 路线发出的是每个线程自己的 FMA 指令。
+
+---
+
 ## 小结
 
 - `MmaF16BF16Op(Float16, Float32, (16,8,8))` 描述的是一条底层 warp-level MMA atom。
@@ -400,6 +601,7 @@ def mma_atom_and_permutation_demo():
 - `thread_mma.get_slice(thread_idx)` 可以把一个大 tile 切成线程级 fragment，再用 `partition_A/B/C` 取出当前线程负责的数据。
 - `atom_layout_mnk` 用来沿 $M/N/K$ 复制 MMA atom，实际中最常见的是扩 $M/N$，而不是扩 $K$。
 - `permutation_mnk` 可以让每个线程处理更多的数据，从而用来重排更大 tile 内的逻辑坐标，尤其适合把某个 mode 的访问组织得更连续、更利于后续访存和寄存器布局设计。
+- `MmaUniversalOp(Float32)` 描述的是 CUDA core / SIMT 路线的 FP32 FMA atom，配合 `atom_layout_mnk`、`permutation_mnk` 和 pipeline 可以组织出完整的 SGEMM。
 
 如果只记一个心智模型，可以记成：
 
