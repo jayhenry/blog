@@ -495,7 +495,7 @@ B = (64,16)
 C = (64,64)
 ```
 
-实际 某个 thread 的 partition 结果为：
+实际某个 thread 的 partition 结果为：
 
 
 | partition        | 输入形状                   | 输出形状          | 抽象含义              |
@@ -504,13 +504,33 @@ C = (64,64)
 | `partition_B(B)` | `(BLK_N, BLK_K) = (64,16)` | `(2,(2,2),2)`     | `(MMA, MMA_N, MMA_K)` |
 | `partition_C(C)` | `(BLK_M, BLK_N) = (64,64)` | `((2,2),2,(2,2))` | `(MMA, MMA_M, MMA_N)` |
 
-这个例子里需要区分三层：
+这张表要和前面几节的 partition 表连起来读。
 
-- `MMA`：来自单次 `16x8x8` warp-level atom 的线程 fragment，例如 A/C 中当前线程持有 `((2,2))`；
-- `atom_layout_mnk=(2,2,1)`：把基础 atom 在 $M/N$ 上扩成多个 warp-level atom，形成 `32x16x8` 的中间图样；
-- `permutation_mnk`：继续把 $N$ 方向组织成 `32`，形成最终的 `32x32x8` 基础 `TiledMMA` 图样。
+首先，最左侧的 `MMA` 仍然来自单次 `16x8x8` warp-level atom 的线程私有 fragment：A/C 是 `((2,2))`，B 是 `2`。组合 `atom_layout_mnk` 与 `permutation_mnk` 不会改变单个 atom 内部的 fragment 形状。
 
-当输入 tile 扩到 `64x64x16` 时，`partition_A/B/C` 又会在这个基础图样外面引入额外重复：$M$ 方向重复 2 次，$K$ 方向重复 2 次，$N$ 方向也重复 2 次。因此可以看到 A 的输出是 `((2,2),2,2)`，C 的输出是 `((2,2),2,(2,2))`。
+其次，`atom_layout_mnk=(2,2,1)` 的含义仍然和前面 `atom_layout_mnk` 表格一致：它把多个 atom 放到更大的线程/atom 网格里。对固定的 `get_slice(thread_idx)` 来说，`atom_layout_m` / `atom_layout_n` 不会直接变成当前线程的 `MMA_M` / `MMA_N` 外层循环；当前线程只属于其中一个 atom 坐标。因此，A/C 里的 `MMA_M = 2` 不是来自 `atom_layout_m = 2`，而是来自被 partition 的输入 tile 比最终 `TiledMMA` 基础图样还大一倍：
+
+$$
+64 / 32 = 2
+
+$$
+
+最后看 $N$ 方向。前面的 `permutation_mnk` 表格已经看到：不增加线程数而把 $N$ 从 `8` 扩到 `16` 时，B/C 的 `MMA_N` 会出现一个 `2`，表示同一个 thread 在 $N$ 方向多持有一组 value。组合示例里也是这个逻辑，只是又叠加了一层 CTA tile 相对最终 `TiledMMA` 的外层重复，所以 `MMA_N` 写成嵌套的 `(2,2)`：
+
+```text
+MMA_N = (2, 2)
+         |  |
+         |  +-- 外层 CTA 重复：输入 N = 64，相对 TiledMMA N = 32 再重复 2 次
+         +----- TiledMMA 内部 permutation 展开：在一个 32-wide TiledMMA 内，
+                同一 thread 沿 N 方向持有 2 组 value
+```
+
+注意，前一个 `2` 不是 `atom_layout_n = 2`。`atom_layout_n = 2` 已经体现在 `TiledMMA` 的线程/atom 坐标中，用来把中间图样扩到 `32x16x8`；这里 `MMA_N` 前一个 `2` 来自后续 `permutation_mnk` 把 $N$ 方向继续组织到 `32`。同理，A/B 输出最后的 `MMA_K = 2` 来自输入 $K=16$ 相对 `TiledMMA` 基础 $K=8$ 的外层重复。
+
+所以可以把两个最容易混淆的输出形状读成：
+
+- `partition_B(B) -> (2,(2,2),2)`：`2` 是单个 atom 的 B fragment，`(2,2)` 是“permutation 内部 N 展开 × CTA 外层 N 重复”，最后的 `2` 是外层 K 重复；
+- `partition_C(C) -> ((2,2),2,(2,2))`：`((2,2))` 是单个 atom 的 C fragment，中间的 `2` 是外层 M 重复，最后的 `(2,2)` 同样是“permutation 内部 N 展开 × CTA 外层 N 重复”。
 
 ---
 
