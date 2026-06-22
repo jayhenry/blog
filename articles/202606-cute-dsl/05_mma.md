@@ -571,17 +571,19 @@ tiled_mma = cute.make_tiled_mma(
 )
 ```
 
-这里的 `4` 可以理解为“让同一个线程在对应方向上拿到一组连续元素”。给一个直观的对比：按 tensor 中连续下标看，未重排时线程编号类似：
+可以直接用 cute-viz 对比这层重排前后的差异。只使用 `atom_layout_mnk` 时，`16x16` 个线程正好覆盖一个 `16x16x1` 的基础图样；因为单个 CUDA core atom 是 `1x1x1`，所以 C 图里每个线程只有一个 `V0`，也就是一个线程只对应一个 C 元素。
 
-```text
-0 1 2 ... 15 0 1 2 ... 15 0 1 2 ... 15 ...
-```
+![CUDA core MMA without permutation maps the `16x16` thread layout directly to a `16x16x1` tile, so each thread owns one `V0` C element.](img/05_cuda_core_atom_layout_16x16x1.svg)
 
-重排后变成：
+加入 `permutation_mnk` 后，基础图样从 `16x16x1` 扩成 `64x64x1`。图中 `T` 是线程编号，`V` 是这个线程私有的 value/register 槽位。`permutation_tiler_M = (16,4):(4,1)` 表示：
 
-```text
-0 0 0 0 1 1 1 1 2 2 2 2 ... 15 15 15 15 ...
-```
+- `16` 对应原来的线程网格维度；
+- `4` 对应同一个线程在 $M$ 方向连续持有的 4 个 value；
+- `stride=(4,1)` 让坐标变成 `4 * thread_m + value_m`，所以同一个线程的 `value_m = 0..3` 会落到连续的 $M$ 坐标上。
+
+$N$ 方向同理。因此，每个线程在这个 `64x64` 基础图样中持有一个连续的 $4 \times 4$ C fragment，而不是只持有一个离散元素。
+
+![CUDA core MMA with permutation expands the base tile to `64x64x1`, making each thread own a contiguous `4x4` C fragment.](img/05_cuda_core_permutation_64x64x1.svg)
 
 也就是说，`permutation_mnk` 不是改变 FMA 的数学语义，而是改变“连续数据由哪个线程持有”。这样每个线程从 shared memory 到 register 的搬运更容易向量化，寄存器里的数据也更适合做连续的 FMA。
 
