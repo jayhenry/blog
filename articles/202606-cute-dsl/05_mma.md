@@ -168,14 +168,13 @@ $$
 
 其中：
 
-- `MMA` 表示单个线程在“一次 Tiled MMA”内持有的寄存器片段；
+- `MMA` 表示单个线程在“一次 MMA atom”内持有的寄存器片段；
 - `MMA_M` 表示这个更大 tile 在 $M$ 方向上需要分几块；
 - `MMA_K` 表示这个更大 tile 在 $K$ 方向上需要分几块。
 
 也就是说，`thread_mma` 的职责就是把“一个大 tile 的线程工作”拆成“这个线程需要参与哪些 MMA、小块内拿哪些元素”。这个操作就是前面提到的layout除法的封装，具体来说就是 `tiled_divide`。
 
 还有一点需要提醒，上面这段代码是用 `@cute.jit`装饰，而不是用 `@cute.kernel`，所以它运行在CPU上，而不是GPU上。这里跟实际使用的情况不同，它只是在CPU上用 `thread_idx=0`来对Tensor进行`cute`运算，展示Tensor的变换。
-
 
 把同一个例子扩展到 A/B/C 三个张量，可以得到下面的形状关系。这里使用设置：
 
@@ -245,6 +244,26 @@ def atom_layout_demo():
 这张 `atom_layout_mnk=(2,2,1)` 图展示了 4 个 MMA atom 如何拼成一个更大的 `32x16x8` 逻辑 MMA。
 
 ![The `atom_layout_mnk=(2,2,1)` visualization shows four MMA atoms tiled into a larger `32x16x8` logical MMA.](img/05_atom_layout_2x2x1.svg)
+
+从 `partition_A/B/C` 看，这个例子可以用正好等于 `TiledMMA` 基础尺寸的 tile 来观察：
+
+```text
+tiled_mma tile_mnk = (32,16,8)
+A = (32,8)
+B = (16,8)
+C = (32,16)
+```
+
+某个 thread 的实际 partition 结果为：
+
+
+| partition        | 输入形状                   | 输出形状      | 抽象含义              |
+| ------------------ | ---------------------------- | --------------- | ----------------------- |
+| `partition_A(A)` | `(BLK_M, BLK_K) = (32,8)`  | `((2,2),1,1)` | `(MMA, MMA_M, MMA_K)` |
+| `partition_B(B)` | `(BLK_N, BLK_K) = (16,8)`  | `(2,1,1)`     | `(MMA, MMA_N, MMA_K)` |
+| `partition_C(C)` | `(BLK_M, BLK_N) = (32,16)` | `((2,2),1,1)` | `(MMA, MMA_M, MMA_N)` |
+
+这里的 `1` 很关键：它不表示 `atom_layout_mnk=(2,2,1)` 没有扩展，而是表示对固定的 `get_slice(thread_idx)` 来说，这个线程只看到自己所属的那个 atom fragment。`atom_layout_mnk` 的扩展发生在 `TiledMMA` 的线程布局上，可以理解为把多个 `16x8x8` atom 放到不同的 $M/N$ atom 坐标；更多输出区域由其他 thread slice 覆盖，而不是让同一个线程在 `partition_C` 里多出外层 `MMA_M/MMA_N` 循环。
 
 ### 为什么通常不建议把 `atom_k` 设置大于1？
 
@@ -336,6 +355,26 @@ def mma_permutation_identity_demo():
 
 ![The direct `16x16x8` expansion keeps the larger MMA shape simple, but the per-thread values are still arranged in the unpermuted pattern.](img/05_permutation_identity_16x16x8.svg)
 
+对应的 partition 形状如下。这里被 partition 的 tile 正好等于 permutation 后的基础尺寸：
+
+```text
+tiled_mma tile_mnk = (16,16,8)
+A = (16,8)
+B = (16,8)
+C = (16,16)
+```
+
+某个 thread 的实际 partition 结果为：
+
+
+| partition        | 输入形状                   | 输出形状      | 抽象含义              |
+| ------------------ | ---------------------------- | --------------- | ----------------------- |
+| `partition_A(A)` | `(BLK_M, BLK_K) = (16,8)`  | `((2,2),1,1)` | `(MMA, MMA_M, MMA_K)` |
+| `partition_B(B)` | `(BLK_N, BLK_K) = (16,8)`  | `(2,2,1)`     | `(MMA, MMA_N, MMA_K)` |
+| `partition_C(C)` | `(BLK_M, BLK_N) = (16,16)` | `((2,2),1,2)` | `(MMA, MMA_M, MMA_N)` |
+
+和前面的 `atom_layout_mnk` 不同，这里的 `MMA_N = 2` 出现在当前 thread 自己的 fragment 里。原因是 `permutation_mnk` 没有增加参与线程数，而是把 $N$ 从 `8` 扩到 `16` 后，让同一批线程在 $N$ 方向持有更多 value。也就是说，`permutation_mnk` 更像是在 `TiledMMA` 内部增加每个线程的 value 展开，而不是增加新的 warp-level atom。
+
 ---
 
 ## 在 $N$ 方向做规则化重排
@@ -376,6 +415,8 @@ def mma_permutation_n_demo():
 这张 N 方向 scatter permutation 图展示了两个 `16x8x8` MMA 子块如何在 N 维上交错重排，从而让每个线程看到更规整的布局。
 
 ![The N-mode scatter permutation interleaves the two `16x8x8` MMA images so that each thread sees a more regular layout along N.](img/05_permutation_n_scatter_16x16x8.svg)
+
+如果把前面的直接扩展换成这里的 N 方向 scatter，`partition_A/B/C` 的输出形状仍然是同一张表：A 不受 $N$ 重排影响，B/C 仍然各自多出一个 `MMA_N = 2`。真正变化的是 $N$ 方向的 layout stride，也就是这两个 value 在逻辑 tile 里的摆放方式。
 
 ---
 
