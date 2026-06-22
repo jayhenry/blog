@@ -534,6 +534,49 @@ MMA_N = (2, 2)
 
 ---
 
+## 用 `cute.gemm` 触发 warp-level MMA
+
+前面几节只是在解释 `TiledMMA` 如何描述线程、value 和 tile 的几何关系。真正触发矩阵乘法运算时，kernel 会先把 shared memory / global memory 上的 tile 分成线程私有 fragment，再把这些 fragment 交给 `cute.gemm`：
+
+```python
+thr_mma = tiled_mma.get_slice(tidx)
+
+tCsA = thr_mma.partition_A(sA)
+tCsB = thr_mma.partition_B(sB)
+tCgC = thr_mma.partition_C(gC)
+
+tCrA = tiled_mma.make_fragment_A(tCsA[None, None, None, 0])
+tCrB = tiled_mma.make_fragment_B(tCsB[None, None, None, 0])
+tCrC = tiled_mma.make_fragment_C(tCgC)
+tCrC.fill(0.0)
+```
+
+这里的 `partition_A/B/C` 负责建立“当前线程应该访问哪些元素”的视图，`make_fragment_A/B/C` 则按照 `tiled_mma` 的 TV layout 创建寄存器 fragment。对 warp-level Tensor Core MMA 来说，A/B 的寄存器布局必须匹配底层 `mma.sync` 要求的 fragment 格式，因此通常还会用和 `tiled_mma` 匹配的 shared-memory-to-register copy，把 shared memory 中的数据搬进 `tCrA` / `tCrB`。
+
+主循环里，真正的计算入口是：
+
+```python
+for k_block in cutlass.range(num_k_block, unroll_full=True):
+    cute.gemm(
+        tiled_mma,
+        tCrC,
+        tCrA[None, None, k_block],
+        tCrB[None, None, k_block],
+        tCrC,
+    )
+```
+
+这条 `cute.gemm` 的含义是：按照 `tiled_mma` 描述的 warp-level MMA atom、`atom_layout_mnk` 和 `permutation_mnk`，把当前 `k_block` 的 A/B 寄存器 fragment 做矩阵乘累加，并累加到 C fragment。对 `MmaF16BF16Op(Float16, Float32, (16,8,8))` 这样的 atom，底层会走 warp 协作的 Tensor Core MMA；外层 `k_block` 循环则对应前面 partition 表里的 `MMA_K` 维度。
+
+因此，`TiledMMA` 的职责可以分成两步看：
+
+1. `partition_A/B/C` 和 `make_fragment_A/B/C` 决定每个线程拿到什么寄存器 fragment；
+2. `cute.gemm` 根据同一个 `tiled_mma` 解释这些 fragment，并实际发起 warp-level MMA 累加。
+
+后面 CUDA core 的例子仍然会调用 `cute.gemm`，但底层 atom 会换成 single-thread FMA；也就是说，接口形状相同，真正发出的计算指令由 `tiled_mma` 中的 MMA atom 决定。
+
+---
+
 ## CUDA Core MMA：用 FMA 组织 SIMT GEMM
 
 前面几节讲的是 Tensor Core 路线：一个 MMA atom 对应类似 `mma.sync` 这样的 warp-level 指令，32 个线程共同完成一个固定形状的矩阵乘累加。
@@ -594,7 +637,7 @@ atom_layout_mnk = cute.make_layout(
 
 当 `num_threads = 256` 时，`atom_layout_mnk.shape = (16, 16, 1)`，也就是把 256 个线程组织成一个 $16 \times 16$ 的线程网格。因为 `MmaUniversalOp` 的 atom 本身可以近似看成 `1x1x1`，所以这里的 `atom_layout_mnk` 同时也是 C tile 上的线程分布方式。
 
-如果 C 是列主序，脚本会把线程网格换一个方向：
+如果 C 是列主序，可以把线程网格换一个方向：
 
 ```python
 atom_layout_mnk = cute.make_layout(
@@ -744,7 +787,7 @@ for k in k_fragment:
             acc[m_value, n_value] = fma(a[m_value, k], b[n_value, k], acc[m_value, n_value])
 ```
 
-为了让这串 FMA 尽量不断粮，脚本同时做了两层 pipeline：
+为了让这串 FMA 尽量不断粮，通常会同时安排两层 pipeline：
 
 - **shared memory pipeline**：用 `cp.async` 把后续 K tile 从 global memory 提前搬到 shared memory，默认 `num_stages = 3`；
 - **register pipeline**：用 `cute.autovec_copy` 把下一个 `k_block` 的 A/B 从 shared memory 提前搬到寄存器，和当前 `k_block` 的 FMA 交错起来。
