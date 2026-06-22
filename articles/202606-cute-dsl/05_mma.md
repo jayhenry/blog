@@ -661,7 +661,7 @@ tCsB = thr_mma.partition_B(sB)
 tCgC = thr_mma.partition_C(gC)
 ```
 
-这几行和前面 warp-level MMA 的 `thread_mma.get_slice()` 是同一个抽象：先从全局 tile 得到当前线程的视角，再构造寄存器 fragment。区别在于 CUDA core 的 `MMA` 维度是平凡的 `1`，因为 `MmaUniversalOp(Float32)` 是 single-thread `1x1x1` FMA atom。
+这几行和前面 warp-level MMA 的 `thread_mma.get_slice()` 是同一个抽象：先从全局 tile 得到当前线程的视角，再构造寄存器 fragment。区别在于 CUDA core 的最左侧 `MMA` 维度是平凡的 `1`，因为 `MmaUniversalOp(Float32)` 是 single-thread `1x1x1` FMA atom。
 
 使用设置：
 
@@ -680,10 +680,23 @@ gC = (128,128)
 | `partition_B(sB)` | `(BLK_N, BLK_K, PIPE) = (128,8,3)` | `(1,(4,2),8,3)`   | `(MMA, MMA_N, MMA_K, PIPE)` |
 | `partition_C(gC)` | `(BLK_M, BLK_N) = (128,128)`       | `(1,(4,2),(4,2))` | `(MMA, MMA_M, MMA_N)`       |
 
-这里 `(4,2)` 的两层含义是：
+这张表和前面的几张表是同一套读法，只是底层 atom 从 warp-level `16x8x8` MMA 变成了 single-thread `1x1x1` FMA：
 
-- `4`：单个 $64 \times 64$ 基础图样内，同一个线程在该方向上连续持有的 4 个元素；
-- `2`：完整 $128 \times 128$ CTA tile 相对 $64 \times 64$ 基础图样，在该方向上还要重复 2 次。
+- 最左侧的 `MMA = 1`：单个 CUDA core FMA atom 内，当前线程一次只处理一个标量乘加；
+- `MMA_K = 8`：A/B 在 $K$ 方向上需要取 8 个元素，对应当前线程沿 $K$ 做 8 次 FMA 累加；
+- `PIPE = 3`：来自 shared memory stage 维度，不属于 MMA 的 $M/N/K$ 几何分解。
+
+重点看 `MMA_M` / `MMA_N` 里的 `(4,2)`。它和组合 `TiledMMA` 表格里的 `MMA_N=(2,2)` 是同一种嵌套结构：前一项来自 `TiledMMA` 基础图样内部的 per-thread value 展开，后一项来自 CTA tile 相对基础图样的外层重复。
+
+```text
+MMA_M 或 MMA_N = (4, 2)
+                 |  |
+                 |  +-- 外层 CTA 重复：输入 128，相对 TiledMMA 基础尺寸 64 再重复 2 次
+                 +----- TiledMMA 内部 permutation 展开：在一个 64-wide 基础图样内，
+                        同一 thread 沿该方向连续持有 4 个元素
+```
+
+所以 `partition_C(gC) -> (1,(4,2),(4,2))` 可以读成：`1` 是单次 FMA atom，两个 `(4,2)` 分别是 $M$ 和 $N$ 方向上的“permutation 内部连续 4 个元素 × CTA 外层重复 2 次”。
 
 因此每个线程在 C 上总共覆盖：
 
@@ -699,7 +712,7 @@ $$
 
 $$
 
-`permutation_mnk` 的 $4 \times 4$ 和 `partition_C` 的 $2 \times 2$ 最终都会变成多次 FMA，但层级不同：前者决定 `TiledMMA` 基础图样内每个线程的寄存器 fragment 和局部展开顺序，后者是 CTA tile 相对基础图样的外层重复 mode。
+`permutation_mnk` 的 $4 \times 4$ 和 CTA 外层重复的 $2 \times 2$ 最终都会变成多次 FMA，但层级不同：前者决定 `TiledMMA` 基础图样内每个线程的连续寄存器 fragment 和局部展开顺序，后者是 CTA tile 相对基础图样的外层重复 mode。
 
 ### 主循环：shared memory pipeline + register pipeline + FMA
 
