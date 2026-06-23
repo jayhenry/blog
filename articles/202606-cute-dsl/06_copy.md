@@ -283,11 +283,11 @@ $$
 
 这张图展示了 `cp.async` 的完整 `16x16` tiled copy：32 个线程被组织成两列 thread block，每个线程处理一个连续的 `8` 元素向量。
 
-![The `cp.async` tiled copy on `16x16` organizes 32 threads into two column blocks, each carrying one contiguous 8-element vector.](img/06_copy_cpasync_tiled_16x16.svg)
+![The `cp.async` tiled copy on `16x16` organizes 32 threads into two column blocks, each carrying one contiguous 8-element vector.](img/06_copy_cpasync_tiled_16x16.jpg)
 
 把源端 TV layout 单独拿出来看，会更容易理解“谁负责哪一个 `16B` 向量”。
 
-![The source TV layout of the `cp.async` tiled copy highlights how the `16x16` tile is partitioned into thread-owned 8-element vectors.](img/06_copy_cpasync_src_tv_16x16.svg)
+![The source TV layout of the `cp.async` tiled copy highlights how the `16x16` tile is partitioned into thread-owned 8-element vectors.](img/06_copy_cpasync_src_tv_16x16.jpg)
 
 真正执行时，每个线程先取自己的 slice：
 
@@ -549,7 +549,7 @@ def render_ldmatrix_8x8():
     render_tiled_copy_svg(ldmatrix_8x8, (8, 8), "img/06_copy_ldmatrix_8x8.svg")
 ```
 
-![The standard `8x8` `ldmatrix` copy maps shared-memory rows to a register fragment where each thread owns two values.](img/06_copy_ldmatrix_8x8.svg)
+![The standard `8x8` `ldmatrix` copy maps shared-memory rows to a register fragment where each thread owns two values.](img/06_copy_ldmatrix_8x8.jpg)
 
 回写到 `mB` 时，使用
 
@@ -561,7 +561,7 @@ def render_ldmatrix_8x8():
 
 ---
 
-## `.num_matrices=4`：让一个 warp 一次装入 `16x16`
+### `.num_matrices=4`：让一个 warp 一次装入 `16x16`
 
 如果 shared memory 里已经有一个 `16x16` tile，还可以让同一个 warp 一次执行 `.x4` 风格的 `ldmatrix`。在 CuTe DSL 里，对应的是：
 
@@ -658,7 +658,7 @@ def render_ldmatrix_num4_16x16():
     )
 ```
 
-![The `.num_matrices=4` `ldmatrix` copy covers a `16x16` tile with one warp, giving each thread a larger 8-value register fragment.](img/06_copy_ldmatrix_num4_16x16.svg)
+![The `.num_matrices=4` `ldmatrix` copy covers a `16x16` tile with one warp, giving each thread a larger 8-value register fragment.](img/06_copy_ldmatrix_num4_16x16.jpg)
 
 最后把 `rmem_tensor[0:8]` 依次散回四个象限：
 
