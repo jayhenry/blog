@@ -105,7 +105,7 @@ def mma_atom_demo():
 
 这张基础 `16x8x8` MMA atom 图把 A、B、C 三部分的 thread-value 分工放在同一个视图里展示。
 
-![The base `16x8x8` MMA atom visualization shows the thread-value ownership of A, B, and C in one unified view.](img/05_mma_atom_16x8x8.svg)
+![The base `16x8x8` MMA atom visualization shows the thread-value ownership of A, B, and C in one unified view.](img/05_mma_atom_16x8x8.jpg)
 
 ---
 
@@ -243,7 +243,7 @@ def atom_layout_demo():
 
 这张 `atom_layout_mnk=(2,2,1)` 图展示了 4 个 MMA atom 如何拼成一个更大的 `32x16x8` 逻辑 MMA。
 
-![The `atom_layout_mnk=(2,2,1)` visualization shows four MMA atoms tiled into a larger `32x16x8` logical MMA.](img/05_atom_layout_2x2x1.svg)
+![The `atom_layout_mnk=(2,2,1)` visualization shows four MMA atoms tiled into a larger `32x16x8` logical MMA.](img/05_atom_layout_2x2x1.jpg)
 
 从 `partition_A/B/C` 看，这个例子可以用正好等于 `TiledMMA` 基础尺寸的 tile 来观察：
 
@@ -313,7 +313,7 @@ def atom_layout_k_demo():
 
 这张 `atom_layout_mnk=(2,2,2)` 图把沿 K 方向继续扩展之后的 MMA 组织方式直观画了出来，可以看到 A 矩阵和 B 矩阵在 K 方向上有了两倍的线程参与（也就是会使用 2倍的mma计算单元）。但是实际很少这样使用。
 
-![The `atom_layout_mnk=(2,2,2)` visualization makes the extra K-direction expansion visible inside the larger MMA tile.](img/05_atom_layout_2x2x2.svg)
+![The `atom_layout_mnk=(2,2,2)` visualization makes the extra K-direction expansion visible inside the larger MMA tile.](img/05_atom_layout_2x2x2.jpg)
 
 ---
 
@@ -353,7 +353,7 @@ def mma_permutation_identity_demo():
 
 这张直接扩展到 `16x16x8` 的图说明：虽然整体 tile 变大了，但每个线程拿到的 value 仍然保持未经 permutation 的原始排布方式。
 
-![The direct `16x16x8` expansion keeps the larger MMA shape simple, but the per-thread values are still arranged in the unpermuted pattern.](img/05_permutation_identity_16x16x8.svg)
+![The direct `16x16x8` expansion keeps the larger MMA shape simple, but the per-thread values are still arranged in the unpermuted pattern.](img/05_permutation_identity_16x16x8.jpg)
 
 对应的 partition 形状如下。这里被 partition 的 tile 正好等于 permutation 后的基础尺寸：
 
@@ -414,7 +414,7 @@ def mma_permutation_n_demo():
 
 这张 N 方向 scatter permutation 图展示了两个 `16x8x8` MMA 子块如何在 N 维上交错重排，从而让每个线程看到更规整的布局。
 
-![The N-mode scatter permutation interleaves the two `16x8x8` MMA images so that each thread sees a more regular layout along N.](img/05_permutation_n_scatter_16x16x8.svg)
+![The N-mode scatter permutation interleaves the two `16x8x8` MMA images so that each thread sees a more regular layout along N.](img/05_permutation_n_scatter_16x16x8.jpg)
 
 如果把前面的直接扩展换成这里的 N 方向 scatter，`partition_A/B/C` 的输出形状仍然是同一张表：A 不受 $N$ 重排影响，B/C 仍然各自多出一个 `MMA_N = 2`。真正变化的是 $N$ 方向的 layout stride，也就是这两个 value 在逻辑 tile 里的摆放方式。
 
@@ -475,7 +475,7 @@ def mma_atom_and_permutation_demo():
 
 这张 `atom_layout_mnk` 与 permutation 组合图展示了一个更大的 `32x32x8` MMA tile 如何同时完成线程扩展和逻辑重排。
 
-![The combined `atom_layout_mnk` plus permutation visualization shows how a larger `32x32x8` MMA tile can be both expanded and reordered at the same time.](img/05_atom_permutation_32x32x8.svg)
+![The combined `atom_layout_mnk` plus permutation visualization shows how a larger `32x32x8` MMA tile can be both expanded and reordered at the same time.](img/05_atom_permutation_32x32x8.jpg)
 
 ---
 
@@ -677,7 +677,7 @@ tiled_mma = cute.make_tiled_mma(
 
 可以直接用 cute-viz 对比这层重排前后的差异。只使用 `atom_layout_mnk` 时，`16x16` 个线程正好覆盖一个 `16x16x1` 的基础图样；因为单个 CUDA core atom 是 `1x1x1`，所以 C 图里每个线程只有一个 `V0`，也就是一个线程只对应一个 C 元素。
 
-![CUDA core MMA without permutation maps the `16x16` thread layout directly to a `16x16x1` tile, so each thread owns one `V0` C element.](img/05_cuda_core_atom_layout_16x16x1.svg)
+![CUDA core MMA without permutation maps the `16x16` thread layout directly to a `16x16x1` tile, so each thread owns one `V0` C element.](img/05_cuda_core_atom_layout_16x16x1.jpg)
 
 加入 `permutation_mnk` 后，基础图样从 `16x16x1` 扩成 `64x64x1`。图中 `T` 是线程编号，`V` 是这个线程私有的 value/register 槽位。`permutation_tiler_M = (16,4):(4,1)` 表示：
 
@@ -687,7 +687,7 @@ tiled_mma = cute.make_tiled_mma(
 
 $N$ 方向同理。因此，每个线程在这个 `64x64` 基础图样中持有一个连续的 $4 \times 4$ C fragment，而不是只持有一个离散元素。
 
-![CUDA core MMA with permutation expands the base tile to `64x64x1`, making each thread own a contiguous `4x4` C fragment.](img/05_cuda_core_permutation_64x64x1.svg)
+![CUDA core MMA with permutation expands the base tile to `64x64x1`, making each thread own a contiguous `4x4` C fragment.](img/05_cuda_core_permutation_64x64x1.jpg)
 
 也就是说，`permutation_mnk` 不是改变 FMA 的数学语义，而是改变“连续数据由哪个线程持有”。这样每个线程从 shared memory 到 register 的搬运更容易向量化，寄存器里的数据也更适合做连续的 FMA。
 
