@@ -532,7 +532,22 @@ Copy Atom
 
 这张图展示了标准 `8x8` `ldmatrix` copy 的 thread-value 分工：左边是 shared memory 源布局，右边是寄存器目标布局。
 
-这张图可以由同目录下的 `06_copy_figures.py` 生成，核心就是对 `LdMatrix8x8x16bOp` 创建 `TiledCopy` 后调用 `render_tiled_copy_svg`。
+生成这张图的核心代码如下：
+
+```python
+@cute.jit
+def render_ldmatrix_8x8():
+    ldmatrix_8x8 = cute.make_tiled_copy_tv(
+        cute.make_copy_atom(
+            cute.nvgpu.warp.LdMatrix8x8x16bOp(transpose=False),
+            Float16,
+        ),
+        cute.make_layout((8, 4), stride=(4, 1)),
+        cute.make_layout((1, 2), stride=(2, 1)),
+    )
+
+    render_tiled_copy_svg(ldmatrix_8x8, (8, 8), "img/06_copy_ldmatrix_8x8.svg")
+```
 
 ![The standard `8x8` `ldmatrix` copy maps shared-memory rows to a register fragment where each thread owns two values.](img/06_copy_ldmatrix_8x8.svg)
 
@@ -614,6 +629,34 @@ Copy Atom
 - 这 `8` 个值对应 `16x16` tile 中四个 `8x8` 子矩阵的 fragment。
 
 这张图展示了 `.num_matrices=4` 的 `16x16` `ldmatrix` copy 布局：同一个 warp 仍然只有 32 个线程，但每个线程携带的寄存器 fragment 已经明显变大。
+
+生成这张图的核心代码如下：
+
+```python
+@cute.jit
+def render_ldmatrix_num4_16x16():
+    tv_layout = cute.make_layout(
+        ((4, 8), (2, 2, 2)),
+        stride=((32, 1), (16, 8, 128)),
+    )
+    ldmatrix_num4 = cute.make_tiled_copy(
+        cute.make_copy_atom(
+            cute.nvgpu.warp.LdMatrix8x8x16bOp(
+                transpose=False,
+                num_matrices=4,
+            ),
+            Float16,
+        ),
+        tv_layout,
+        (16, 16),
+    )
+
+    render_tiled_copy_svg(
+        ldmatrix_num4,
+        (16, 16),
+        "img/06_copy_ldmatrix_num4_16x16.svg",
+    )
+```
 
 ![The `.num_matrices=4` `ldmatrix` copy covers a `16x16` tile with one warp, giving each thread a larger 8-value register fragment.](img/06_copy_ldmatrix_num4_16x16.svg)
 
