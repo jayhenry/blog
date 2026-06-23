@@ -808,113 +808,21 @@ for k in k_fragment:
 
 - `MmaF16BF16Op(Float16, Float32, (16,8,8))` 描述的是一条底层 warp-level MMA atom。
 - `display_tiled_mma` 本质上是在同一张图里同时展示 A/B/C 三个 TV layout。
-- `thread_mma.get_slice(thread_idx)` 可以把一个大 tile 切成线程级 fragment，再用 `partition_A/B/C` 取出当前线程负责的数据。
-- `atom_layout_mnk` 用来沿 $M/N/K$ 复制 MMA atom，实际中最常见的是扩 $M/N$，而不是扩 $K$。
-- `permutation_mnk` 可以让每个线程处理更多的数据，从而用来重排更大 tile 内的逻辑坐标，尤其适合把某个 mode 的访问组织得更连续、更利于后续访存和寄存器布局设计。
-- `MmaUniversalOp(Float32)` 描述的是 CUDA core / SIMT 路线的 FP32 FMA atom，配合 `atom_layout_mnk`、`permutation_mnk` 和 pipeline 可以组织出完整的 SGEMM。
+- `atom_layout_mnk` 用来沿 $M/N/K$ 复制 MMA atom，形成 `TiledMMA` 的线程/atom 组织；它扩大参与计算的 atom 布局，但不一定让固定 thread 的 `partition_C` 多出 `MMA_M/MMA_N` 外层循环。
+- `permutation_mnk` 用来在 `TiledMMA` 基础图样内部增加/重排 per-thread value，例如让同一个 thread 在 $N$ 方向多持有一组 value，或者在 CUDA core MMA 中连续持有 $4 \times 4$ 个 C 元素。
+- CTA tile 可以比 `TiledMMA` 的基础图样更大；这时 `partition_A/B/C` 会继续引入 CTA 外层重复。像 `(4,2)`、`(2,2)` 这样的嵌套形状，通常可以读成“`TiledMMA` 内部展开 × CTA 外层重复”。
+- `thread_mma.get_slice(thread_idx)` 取出当前线程视角，`partition_A/B/C` 把 CTA tile 切成线程私有 fragment，`make_fragment_A/B/C` 创建寄存器 fragment，最后由 `cute.gemm` 按同一个 `tiled_mma` 解释这些 fragment 并触发实际计算。
+- `MmaUniversalOp(Float32)` 描述的是 CUDA core / SIMT 路线的 FP32 FMA atom。它和 Tensor Core MMA 共用同一套 `TiledMMA` / `partition` / `cute.gemm` 心智模型，只是最底层 atom 从 warp-level MMA 变成 single-thread FMA。
 
 如果只记一个心智模型，可以记成：
 
-$$
-\text{MMA Atom} \xrightarrow{\text{atom\_layout\_mnk}} \text{更大的 MMA 线程组织}
-\xrightarrow{\text{permutation\_mnk}} \text{更适合工程实现的逻辑排布}
+```mermaid
+flowchart LR
+    A["MMA Atom<br/>硬件最小乘加单元"] --> B["atom_layout_mnk<br/>复制 atom，形成线程/atom 组织"]
+    B --> C["permutation_mnk<br/>基础图样内部的 per-thread value 展开与重排"]
+    C --> D["CTA tile 外层重复<br/>CTA tile 大于 TiledMMA 基础图样时产生"]
+    D --> E["partition_A/B/C<br/>线程私有 fragment"]
+    E --> F["cute.gemm<br/>按 MMA atom 触发 Tensor Core MMA 或 CUDA core FMA"]
+```
 
-$$
-
-## 附录： `permutation_mnk` 会不会和 MMA 对寄存器的要求冲突？
-
-不会。这一点最容易让人困惑，因为 `permutation_mnk` 看上去像是在“重排寄存器”，而 MMA 指令本身又确实要求 fragment 的寄存器分布满足固定格式。关键在于，要区分两种不同层次的排布：
-
-- **单次 MMA atom 内部的寄存器排布**；
-- **多次 MMA atom 组合成更大 tile 之后的逻辑坐标排布**。
-
-MMA 指令真正要求固定的是前者，而 `permutation_mnk` 影响的主要是后者。
-
-### 先看单次 `16x8x8` MMA 对 C fragment 的要求
-
-以 `C` 为例，单次 `16x8x8` MMA 的输出块大小是：
-
-$$
-16 \times 8 = 128
-
-$$
-
-warp 一共有 32 个线程，因此平均到每个线程上，就是：
-
-$$
-128 / 32 = 4
-
-$$
-
-也就是说，在一次 `16x8x8` MMA 中，每个线程都会写入 `fragC` 中固定的 4 个元素。在可视化图里，它们通常就是这个线程对应的 `V0`、`V1`、`V2`、`V3`。
-
-这 4 个 value 的相对位置，是由底层 MMA atom 决定的。只要我们仍然是在执行这条 `16x8x8` 的 MMA 指令，那么这 4 个 value 在“这一次 MMA 对应的 fragment”里的内部关系就不能乱。
-
-### 再看把 tile 从 `16x8x8` 扩到 `16x16x8`
-
-当我们把输出 tile 从：
-
-$$
-(M,N,K) = (16,8,8)
-
-$$
-
-扩成：
-
-$$
-(M,N,K) = (16,16,8)
-
-$$
-
-本质上并不是把“单次 MMA 指令本身”改成了另一种寄存器规则，而是让同一个 warp 逻辑上要完成两次 `16x8x8` 子块计算，合起来覆盖一个更大的 `16x16` 输出块。
-
-于是可以把这个 warp 的工作理解成：
-
-- 第一次 MMA：每个线程产出自己的 `V0`、`V1`、`V2`、`V3`；
-- 第二次 MMA：每个线程再产出自己的 `V4`、`V5`、`V6`、`V7`。
-
-这里 `V4` 到 `V7` 可以理解为“第二次 MMA 贡献的那一组 value”。它们并不是把第一次 MMA 的 4 个寄存器槽位内部打乱了，而只是让 warp 在更大的逻辑 tile 中又多写了一组结果。
-
-### `permutation_mnk` 改变的是绝对坐标，不是单次 MMA 的内部关系
-
-如果不做特殊 permutation，而只是把 `N` 方向直接扩展到 16，那么从图上会看到：
-
-- 同一个线程确实拿到了更多 value；
-- 这些新增 value 往往只是原始 pattern 的重复；
-- 它们在更大 tile 里的坐标未必连续。
-
-如果加入前一节的 `permutation_mnk`，那么变化发生在“这些 value 被放到更大 C tile 的什么位置”这件事上。
-
-换句话说：
-
-- `V0`、`V1`、`V2`、`V3` 这一组内部的相对关系没有变；
-- `V4`、`V5`、`V6`、`V7` 这一组内部的相对关系也没有变；
-- 变化的是这两组小块在整个 `16x16` 逻辑图中的**拼接顺序**与**绝对坐标**。
-
-因此，`permutation_mnk` 更像是在说：
-
-> 先让 warp 分别完成两次合法的 `16x8x8` MMA，再把这两次结果映射到更大的逻辑输出 tile 中更合适的位置。
-
-这就解释了为什么它不会破坏 MMA 指令本身对 fragment 的要求。
-
-### 一个更直观的理解
-
-可以把单次 MMA 看成一个“不能拆散内部结构的小积木块”：
-
-- 每个线程在这个小积木块里该拿哪 4 个元素，是硬件/atom 决定的；
-- `permutation_mnk` 不能改变这个小积木块的内部连接关系；
-- 它能做的是把多个小积木块在更大的平面上重新摆放。
-
-所以，`permutation_mnk` 并不是在说“把一次 MMA 的寄存器随意洗牌”，而是在说“保持每次 MMA 自身合法，再把多次 MMA 的结果交错排布”。
-
-### 为什么这种重排反而有价值？
-
-因为从 kernel 设计角度看，我们最终关心的往往不是“单次 MMA 结束后寄存器长什么样”本身，而是：
-
-- 后续要不要把这些结果写回 shared memory；
-- 写回 global memory 时是否连续；
-- 同一个线程负责的元素是否在某个维度上更规整。
-
-这正是 `permutation_mnk` 的价值所在。它不去碰单次 MMA atom 的底层约束，而是在更高一层重新组织多个 MMA 子块的逻辑位置，从而把寄存器结果排成一个对后续 copy / store 更友好的大 tile。
-
----
+因此读一个 partition 形状时，先看最左侧 `MMA` 是单个 atom 内部 fragment，再看中间 mode 是否来自 `permutation_mnk` 的内部展开，最后看是否还有 CTA tile 相对 `TiledMMA` 基础图样的外层重复。
