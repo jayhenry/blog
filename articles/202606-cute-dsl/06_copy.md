@@ -794,35 +794,6 @@ print(f"B: {B}")
 
 ---
 
-## 附录：一个容易踩中的同步错误
-
-先说结论：`cute.arch.sync_threads()` 不能放在依赖 `tidx < M` 这类条件的不同控制流里，否则非常容易挂住。
-
-这不是 `ldmatrix` 特有的问题，而是 block 级屏障的基本要求：同一个 thread block 里的所有线程，必须在一致的结构位置执行同步。把 barrier 分别塞到 `if` 和 `else` 分支中，哪怕两个分支里都“写了一个 barrier”，也不等价于“整个 block 在同一个点同步”。
-
-这一点在把 `8x8` tile 先搬入 shared memory、再做 `ldmatrix` 时尤其容易出错，因为只有线程 `0-7` 负责提供 8 行的起始地址，其余线程在 G2S 阶段往往只是占位线程。
-
-下面这段就是一个会挂住的错误结构。问题不在 `cp.async` 或 `ldmatrix` 本身，而在于 `sync_threads()` 被放进了两个分支里：
-
-```python
-if tidx < M:
-    cute.copy(async_copy_atom, mA[(tidx, None)], smem_tensor[(tidx, None)])
-    cute.arch.cp_async_commit_group()
-    cute.arch.cp_async_wait_group(n=0)
-
-    cute.arch.sync_threads()  # 错误：barrier 在 if 分支里
-else:
-    cute.arch.sync_threads()  # 错误：这里不是同一个同步点
-```
-
-这种写法的问题可以直接概括成一句话：**barrier 必须出现在所有线程都会以完全一致的控制流经过的位置**。只要把它放进条件分支，后面就很容易出现“有的线程已经继续往下执行，有的线程仍然卡在同步点”的情况。
-
-这背后是 GPU 硬件执行模型的约束。同一个 warp 内的线程会按同一条指令流推进；即使某些线程不满足 `if tidx < M`，它们也不是“完全不参与这段控制流”，而是会跟着 warp 一起经历分支发散与 reconvergence，只是在自己不活跃的那一支上不真正执行对应的访存或算术操作。
-
-因此，不能把它想成 CPU 上“不同线程各跑各的 if/else”。对 warp 来说，分支两侧通常是按硬件规则串行化处理的；而 `cute.arch.sync_threads()` 对应的是 block 级 barrier，它要求所有未退出线程都从**同一个程序点**到达同步位置。
-
----
-
 ## 小结
 
 围绕这组 copy 例子，可以把 CuTe DSL 里的层次关系压缩成五句话：
@@ -854,3 +825,32 @@ else:
 [7] [PTX: warp-level matrix instruction `ldmatrix`](https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-instructions-ldmatrix)
 
 [8] [sgemm的CuTe DSL实现](https://github.com/nvidia/cutlass/blob/main/examples/python/CuTeDSL/cute/ampere/kernel/dense_gemm/sgemm.py)
+
+--- 
+
+## 附录：一个容易踩中的同步错误
+
+先说结论：`cute.arch.sync_threads()` 不能放在依赖 `tidx < M` 这类条件的不同控制流里，否则非常容易挂住。
+
+这是 block 级屏障的基本要求：同一个 thread block 里的所有线程，必须在一致的结构位置执行同步。把 barrier 分别塞到 `if` 和 `else` 分支中，哪怕两个分支里都“写了一个 barrier”，也不等价于“整个 block 在同一个点同步”。
+
+这一点在把 `8x8` tile 先搬入 shared memory、再做 `ldmatrix` 时尤其容易出错，因为只有线程 `0-7` 负责提供 8 行的起始地址，其余线程在 G2S 阶段往往只是占位线程。
+
+下面这段就是一个会挂住的错误结构。问题不在 `cp.async` 或 `ldmatrix` 本身，而在于 `sync_threads()` 被放进了两个分支里：
+
+```python
+if tidx < M:
+    cute.copy(async_copy_atom, mA[(tidx, None)], smem_tensor[(tidx, None)])
+    cute.arch.cp_async_commit_group()
+    cute.arch.cp_async_wait_group(n=0)
+
+    cute.arch.sync_threads()  # 错误：barrier 在 if 分支里
+else:
+    cute.arch.sync_threads()  # 错误：这里不是同一个同步点
+```
+
+这种写法的问题可以直接概括成一句话：**barrier 必须出现在所有线程都会以完全一致的控制流经过的位置**。只要把它放进条件分支，后面就很容易出现“有的线程已经继续往下执行，有的线程仍然卡在同步点”的情况。
+
+这背后是 GPU 硬件执行模型的约束。同一个 warp 内的线程会按同一条指令流推进；即使某些线程不满足 `if tidx < M`，它们也不是“完全不参与这段控制流”，而是会跟着 warp 一起经历分支发散与 reconvergence，只是在自己不活跃的那一支上不真正执行对应的访存或算术操作。
+
+因此，不能把它想成 CPU 上“不同线程各跑各的 if/else”。对 warp 来说，分支两侧通常是按硬件规则串行化处理的；而 `cute.arch.sync_threads()` 对应的是 block 级 barrier，它要求所有未退出线程都从**同一个程序点**到达同步位置。
