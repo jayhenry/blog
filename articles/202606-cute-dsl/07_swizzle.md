@@ -20,6 +20,8 @@ from cute_viz import display_layout, display_swizzle_layout
 
 ## 从一个 `8x8` layout 开始
 
+TODO：补充这个简单例子的背景，share memory是 8x8 个元素，假设一共8个bank，每个bank可以存1个元素。global memory写入shared memory是按行写，register读取shared memory时按列读。所以要保证，无论是整行或整列访问时都不会bank conflict。
+
 先构造一个最基础的 `8x8` row-major layout：
 
 ```python
@@ -129,7 +131,7 @@ $$
 从 shared memory 的角度看，这个例子最重要的直觉是：
 
 - 如果把一列近似看成一组 bank 访问目标，那么原本同列聚集的数据更容易产生冲突；
-- 经过 swizzle 之后，同一批逻辑相邻元素会被打散到不同列；
+- 经过 swizzle 之后，同一批逻辑相邻元素会被打散到不同物理列；
 - 因此同一次访问更有机会覆盖不同 bank，从而缓解 bank conflict。
 
 ---
@@ -138,10 +140,10 @@ $$
 
 实际写 shared memory layout 时，swizzle 往往不是手工拍脑袋选出来的，而是和一次 copy 的位宽、数据类型、bank 组织方式一起决定。
 
-对 `SM90` 而言，这里先区分两个容易混在一起的“位宽”概念：
+这里先区分两个容易混在一起的“位宽”概念：
 
-- `copy_bits` 表示下游消费者一次从 shared memory 连续取走多少 bit 的数据。这里写成 `128`，表示一次 copy 宽度是 `128 bit = 16 B`。在 CUTLASS / CuTe 的 copy atom 语境里，这个量对应“每次 copy 的向量宽度”；对于 TMA 相关 API，官方文档也把它描述成一次 TMA copy 的 vector length [3]。
-- 另外，Hopper 的硬件(`SM90` )的 TMA shared-memory swizzle 提供 `32B`、`64B`、`128B` 三种 swizzle width，而且 swizzle 的基本粒度固定为 `16B` [4]。TMA 有单独的 swizzle 接口，不是本文的 API。
+- `copy_bits` 表示构造这个 layout atom 时希望保留的局部连续访问粒度。这里写成 `128`，表示把一个 `128 bit = 16B` 的向量作为不可拆的基本连续单元来考虑。对 CuTe `make_swizzle` 来说，这不是硬件指令本身，而是我们选择 swizzle 参数时使用的设计约束。
+- Hopper 的 TMA shared-memory swizzle 也有 `32B`、`64B`、`128B` 等 swizzle width，并且官方文档明确说 swizzle 可以用于避免 shared memory bank conflict [4]。但 TMA swizzle 是 tensor map descriptor 里的硬件配置；本文这里讨论的是 CuTe `Swizzle` / `ComposedLayout` 这种软件 layout 变换，两者概念相关，但 API 不同。
 
 下面这个例子考虑 `Float16` 和 `128-bit` copy：
 
@@ -203,12 +205,14 @@ $$
 
 $$
 
-4. 最后取对数，得到需要多少个 swizzle bit 才能把这些向量打散开：
+4. 最后取对数，得到需要多少个 swizzle bit 才能区分这些向量块：
 
 $$
 \text{swizzle\_bits} = \log_2(\text{num\_vec})
 
 $$
+
+这个公式隐含两个前提：`num_vec` 应该是正的 2 的幂，并且这里是在一个 bank pattern 周期内分析局部 layout atom。如果不是这个形状，就不能简单把 `int(log2(...))` 当作通用规则。
 
 代入这段代码的具体数值：
 
@@ -292,12 +296,14 @@ def example():
 
 $$
 \text{layout\_atom} = \text{swizzle} \circ \text{layout\_atom\_outer}
+
 $$
 
 对于逻辑坐标 `(r, c)`，原始的 `layout_atom_outer = (8,32):(32,1)` 先给出线性地址：
 
 $$
 \text{offset}_{\text{outer}} = 32r + c
+
 $$
 
 然后 `S<2,3,3>` 再把这个 offset 映射成新的 shared-memory 地址。逻辑上的 `(8,32)` 形状完全没有变，变化的是“同一个逻辑坐标最终落到哪一个物理 offset 上”。
@@ -309,11 +315,17 @@ S<2,3,3>
 
 $$
 
-这个参数组合正好可以和前两节连起来看：
+这个参数组合正好可以和前两节连起来看。CuTe 官方文档把 `S<B,M,S>` 的三个参数解释为：
 
-- 前一节已经算出 `swizzle_bits = 2`，所以这里的第一个参数 `B=2`，表示需要重排的是 `2` 个 bit，也就是 `4` 个 `16B` copy 向量之间的选择位；
+- `B` / `BBits`：参与 xor 的 mask bit 数；
+- `M` / `MBase`：最低多少个 bit 保持不变；
+- `S` / `SShift`：两组 mask bit 之间的位移距离 [3]。
+
+在这个例子中：
+
+- 前一节已经算出 `swizzle_bits = 2`，所以第一个参数 `B=2`，表示要改写的是 2 个 bit，也就是 row 内 `4` 个 `16B` 向量块之间的选择位；
 - `copy_bits = 128 bit = 16B`，而一个 `Float16` 元素是 `2B`，因此单个 copy 向量正好覆盖 `8` 个连续元素，所以要保留向量内部的位置不变，需要 `M=3`，因为 `2^3 = 8`；
-- 第三个参数 `S=3` 则表示：把“向量编号”相关的 bit，跨过这 `3` 个最低位以后，再和更高位做异或混合 [2][3]。直观上，可以把它理解成“保持每个 `16B` 向量内部连续，但让不同 row 的向量编号发生变化”。
+- 第三个参数 `S=3` 表示把距离为 3 的高位 mask 右移后 xor 到当前 mask 上。它不是“又保留 3 个 bit”，而是决定高位信息从哪里取、xor 到哪里去。
 
 如果只抓住这一节最关键的两个问题，那么其实就是：为什么 `m=3`，以及为什么 `s=3`。
 
@@ -323,18 +335,21 @@ $$
 
 $$
 128\text{ bit} = 16\text{B}
+
 $$
 
 而每个 `Float16` 元素占 `2B`，所以一个 copy 向量里有：
 
 $$
 16\text{B} / 2\text{B} = 8
+
 $$
 
 个连续元素，也就是正好需要 `3` 个 bit 来标识：
 
 $$
 \log_2 8 = 3
+
 $$
 
 因此这里选 `m=3` 的本质是：把一个 `16B` copy 向量内部的元素位置完整保留下来，不让 swizzle 去打乱它们。
@@ -347,55 +362,79 @@ $$
 
 ### 为什么 `s=3`
 
-`SShift` 的作用是把高位那组参与异或的 bit，平移到低位来和当前 bit 组做 xor [2][3]。这里取 `s=3`，核心原因是：我们希望 swizzle 的作用单位就是“一个 `16B` 向量”，而不是更细或更粗的粒度。
+`SShift` 的作用是控制另一组 mask bit 与当前 mask bit 的距离。官方文档[3]里的图可以概括成：
 
-前面已经知道：
+```text
+0bxxxxxxxxxxxxxxxYYYxxxxxxxZZZxxxx
+                                  ^--^ MBase: 低位保持不变
+                     ^-^       ^-^     BBits: mask 宽度
+                       ^---------^     SShift: YYY 到 ZZZ 的距离
 
-- 最低 `3` 个 bit 是向量内部位置；
-- 再往上的 `2` 个 bit 是当前 row 里“第几个 `16B` 向量”；
-- 更高的 bit 则来自 row 编号或者更高层的 tile 结构。
+结果里 ZZZ 位置会变成 AAA = ZZZ xor YYY
+```
 
-因此把 `s` 设成 `3`，等价于说：先跨过这 `3` 个“向量内部位置位”，再去拿更高位的信息来改写“向量编号位”。这样做的效果是：
+对 `layout_atom_outer = (8,32):(32,1)`，线性 offset 是：
 
-- 向量内部顺序不变；
-- 被改写的是“当前元素属于 row 内第几个 `16B` 向量”；
-- 参与改写的信息来自更高位，也就是 row / tile 相关的位，因此不同 row 会得到不同的向量编号映射。
+```text
+offset = 32 * r + c
+```
 
-直观上，可以把它近似理解成：
+再把列坐标按 `16B` 向量拆开：
+
+```text
+c = vec * 8 + intra
+intra = c[0..2]
+vec   = c[3..4]
+```
+
+因为 `M=3, B=2, S=3`：
+
+- `intra` 对应最低 3 个 bit，由 `M=3` 保持不变；
+- `vec` 对应 offset bit `3..4`，这是被 xor 改写的 Z mask；
+- 参与 xor 的 Y mask 在 offset bit `6..7`。
+
+注意这里 **bit 5 不参与这次 xor**。对这个 `8x32` layout 来说，row 编号 `r` 位于 offset 的 bit `5..7`，因此只有 row 的高两位会参与 `S<2,3,3>` 的 xor，row 的最低位不会参与。也就是说，row `0/1`、`2/3`、`4/5`、`6/7` 会成对共享同一种向量映射。
+
+因此更精确的效果是：
 
 $$
-\text{new\_vec} = \text{vec} \oplus f(\text{row})
+\text{new\_vec} = \text{vec} \oplus (r \gg 1)
+
 $$
 
-而不是去改写 `intra`。也就是说，swizzle 改变的是“这个 `16B` 块落到哪一组 bank”，而不是“块内部 8 个元素的相对顺序”。这里的 `f(row)` 是对更高位的简写，表示它由 row 或更高层级的地址 bit 决定；这是对文档与代码行为的直观概括。
+这里的公式只针对当前 `(8,32):(32,1)` 例子。它说明了两个关键点：
+
+- swizzle 改写的是 `16B` 向量块编号；
+- swizzle 不改写向量内部 `intra`，所以局部连续性保留。
 
 从反面看，这个选择也很自然：
 
-- 如果 `s < 3`，高位 mask 会侵入向量内部那 `3` 个位置位，容易破坏 `16B` copy 的局部连续性；
-- 如果 `s > 3`，swizzle 就会跳过离当前向量最近的高位结构，只和更远的位做混合。那样通常仍可能构造出合法布局，但对这个 `8x32` atom 来说，就不再是“以一个 `16B` 向量为基本单位来做局部 bank 打散”了。
+- 如果 `s < 3`，Y mask 会离低位更近，可能和希望保留的向量内部位置位发生干扰；
+- 如果 `s > 3`，Y mask 会取更高的地址位。那样仍可能是合法 swizzle，但对这个 `8x32` atom 来说，就不再利用最邻近的 row 相关高位来打散 row 内向量编号。
 
 因此，`m=3` 和 `s=3` 其实是一组互相配合的选择：
 
-- `m=3` 先定义“一个不可拆的局部单位就是 8 个 `Float16`，也就是 `16B`”；
-- `s=3` 再保证 swizzle 的 xor 混合是在这个单位之上发生，而不是跑到单位内部去。
+- `m=3` 定义“一个不可拆的局部单位就是 8 个 `Float16`，也就是 `16B`”；
+- `s=3` 让高位 mask 从 bit `6..7` 来，xor 到 bit `3..4`，从而改写 `16B` 向量块编号。
 
 如果把列坐标 `c` 按 `16B` 向量拆开来看：
 
 $$
 c = (\text{vec} \times 8) + \text{intra}, \qquad \text{intra} \in [0, 7]
+
 $$
 
 那么：
 
 - `intra = c \bmod 8` 对应最低 `3` 个 bit，它们由 `M=3` 保持不变；
 - `vec = \lfloor c / 8 \rfloor` 对应接下来的 `2` 个 bit，它们正是 `B=2` 负责重排的对象；
-- swizzle 之后，变化的主要是 `vec` 这一层，而不是 `intra` 这一层。
+- 对当前 layout，`S=3` 使 row 的高两位参与 xor，因此变化的是 `vec` 这一层，而不是 `intra` 这一层。
 
 因此，`S<2,3,3>` 的效果可以近似理解为：
 
 - 同一个 `16B` 向量内部，元素依然保持连续；
-- 但不同 row 上，“这是第几个 `16B` 向量”这个编号会被 row 相关的更高位异或打散；
-- 于是原本每一行都落到同一组 bank 的访问模式，会在不同行之间分散到不同 bank 组里。
+- 不同 row 组上，“这是第几个 `16B` 向量”这个编号会被 row 高位异或打散；
+- 于是原本每一行都以完全相同向量编号访问 bank 的模式，会变成 row-dependent 的交错分布。
 
 这也是为什么这里的 swizzle 参数和前面的 `Swizzle<3,0,3>` 教学例子不同。`Swizzle<3,0,3>` 更适合直观看“整列被打散”；而这里的 `S<2,3,3>` 是围绕 `SM90` 上的 `16B` copy 向量来设计的，它更关心的是：
 
@@ -476,7 +515,7 @@ $$
 
 [2] [CuTe 之 Swizzle](https://zhuanlan.zhihu.com/p/671419093)
 
-[3] [NVIDIA CUTLASS Python DSL API: `cutlass.cute.Atom`](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/cute_dsl_api/cute.html)
+[3] [NVIDIA CUTLASS Python DSL Types: `Swizzle`](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/cute_dsl_general/types.html#swizzle)
 
 [4] [CUDA C++ Programming Guide: Asynchronous Data Copies / TMA Swizzle for Compute Capability 9](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-programming-guide/04-special-topics/async-copies.html)
 
