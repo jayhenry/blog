@@ -52,6 +52,8 @@ word 32 -> bank 0
 
 bank conflict 发生在同一个 warp 的一条 shared-memory 指令里：多个线程访问了同一个 bank 的不同地址，这些访问需要被拆成多轮服务。反过来，如果 32 个线程分别落到 32 个不同 bank，就没有 bank conflict。
 
+这件事之所以值得花一整篇来处理，是因为它直接拖慢访存：`n-way conflict` 意味着这条 shared-memory 指令要被硬件拆成 `n` 轮顺序服务，延迟大致放大 `n` 倍。后文出现的 `8-way conflict` 就意味着同一条指令的访存被串行成 8 轮。
+
 ```text
 thread i 读取 element[i]      -> bank = i % 32      -> 无冲突
 thread i 读取 element[i * 32] -> bank = 0           -> 32-way conflict
@@ -179,7 +181,7 @@ bank  = (outer + k * 128) % 32
 
 ## 方案一：Padding
 
-padding 版本的做法是给 K-major 情况加 4 个 `float` padding：
+冲突的根因是 `stride_k = 128` 恰好是 32 个 bank 的整数倍，于是不同 `k` 都落回同一 bank。padding 的思路最直接：把这个 stride 改成不是 32 的整数倍，让相邻 `k` 自动错开 bank。具体做法是给 K-major 情况加 4 个 `float` padding：
 
 ```python
 padding_a = 4 if self.a_major_mode == utils.LayoutEnum.ROW_MAJOR else 0
@@ -267,6 +269,8 @@ padding 的优点是简单、稳定、地址计算直观。代价是多占一点
 对 A/B 合计是 `192 float = 768B`。这个开销不大，但 padding 的本质仍然是“用空间换 bank skew”。
 
 ## Swizzle 原理
+
+在看具体规则之前，先建立一个直觉对照：padding 是「用空间换错位」——多塞几个元素，让相邻 `k` 的地址自然错开 bank；swizzle 则是「不加空间、直接打乱 index 的某些 bit」来达成同样的错位。两者目标一致，都是改变「逻辑坐标 -> shared-memory index」的映射，区别只在用什么手段去改。
 
 CuTe `Swizzle` 是一个作用在线性 index 上的地址变换。放到 shared memory 地址语境里，这个 index 也常被称为 element offset。普通 layout 先把逻辑坐标映射成 index：
 
@@ -719,6 +723,19 @@ flowchart TD
 ```
 
 padding 是最直接的办法：把 `stride_k` 从 `128` 改成 `132`，让不同 `k` 错开 bank。swizzle 则不改变逻辑 shape，而是改写 shared-memory index 的低位 bank-select bits。flat swizzle 直接作用在完整 `(128,8,PIPE)` layout 上，所以需要 `S<3,2,5>`；层次化 swizzle 先把问题放进一个 `32x8` bank 周期 atom 里，所以可以用更局部的 `S<3,2,3>`。
+
+三种方案横向对比如下：
+
+
+| 维度             | 方案一 Padding                  | 方案二 Flat Swizzle              | 方案三 层次化 Swizzle                     |
+| ------------------ | --------------------------------- | ---------------------------------- | ------------------------------------------- |
+| 核心手段         | `stride_k` 从 `128` 改 `132`    | `S<3,2,5>` 作用在完整 `128x8`    | `S<3,2,3>` 作用在 `32x8` atom 后平铺      |
+| 额外 shared memory | 有，A/B 合计约 `768B`           | 无                               | 无                                        |
+| 参数推导依据     | bank 错开 4，地址算式直观        | 依赖完整 layout 的 K bit 位置（bit 7） | 参数落在一个 `128B` bank 周期 atom 内（K bit 位 5） |
+| 推导/分析难度    | 最低                            | 中（需定位完整 layout 的高位）   | 中（atom 内推导更局部，但多一步 `tile_to_shape`） |
+| 适用场景         | 快速验证、对 smem 余量不敏感时   | 想省 smem 且 tile 形状固定        | 通用写法，参数随 atom 复用，最常用        |
+
+三者效果一致：都让一个 warp 的 `128B` 写入落到 32 个不同 bank，消除 bank conflict。选择主要看是否在意 smem 占用，以及是否需要可复用、可随 tile 缩放的 swizzle 参数。
 
 还要注意，本文主要解决的是 row-major A/B 的 **global-to-shared 写入**冲突。shared-to-register 读取阶段依赖 M/N-major 的 shared layout ，访问形状本身更连续，没有 bank conflict。
 
