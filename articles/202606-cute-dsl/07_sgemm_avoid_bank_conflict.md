@@ -589,20 +589,29 @@ BBits = 3
 
 ### 为什么是 `SShift = 3`
 
-在 `32x8` atom 内：
+在 `S<B,M,S>` 里，最低 `M` 个 bit 保持不变；要被 xor 改写的低位 mask 从 bit `M` 开始；参与 xor 的高位 mask 从 bit `M + S` 开始。
+
+层次化版本把基础 atom 设成 `32x8`，所以：
 
 ```text
 index = major_inner + 32 * k
-      = major_inner + 2^5 * k
+32    = 2^5
 ```
 
-FP32 下仍然希望保留 4 个连续元素：
+也就是说，K bit 从 index bit 5 开始。当前 `M = 2`，低位 mask 从 bit 2 开始。要让高位 mask 正好取到 K bit，就需要：
 
 ```text
-4 float = 16B = 2^M = 2^2 elements
+M + S = 5
+S     = 5 - M = 5 - 2 = 3
 ```
 
-TODO：补充更详细的解释 SShift=3，并指出在方案三这种更常用的做法下有 2^(M+S)=128B 一个bank周期。
+这里也能看到 `32x8` atom 的好处：在 FP32 下，
+
+```text
+2^(M+S) elements = 2^5 FP32 = 32 * 4B = 128B
+```
+
+这正好是一个 shared-memory bank 周期。也就是说，方案三把 swizzle 的基础单元对齐到一个 `128B` bank 周期，再在这个周期内把 K bit xor 到 bank-select bits 上。
 
 因此：
 
@@ -673,7 +682,9 @@ flat layout + S<3,2,3>：不对，K bits 没有完整参与 xor。
 32x8 atom + S<3,2,3> + tile_to_shape：可以，atom 内 K bits 正好位于 bit 5..7。
 ```
 
-TODO: 参考方案二最后的内容，补充方案三是否会影响 shared-to-register 读取时的 conflict。
+和 flat swizzle 一样，上表主要分析 global-to-shared 写入。shared-to-register 读取时，计算阶段固定一个 `k_block`，主要沿 M/N-major 的 `major` 维读取连续元素。层次化 swizzle 不会破坏这个读取形状：在单个 `32x8` atom 内固定 `k` 时，`major_inner = 0..31` 仍然会映射到 32 个不同 bank；`MBase = 2` 也继续保留每线程连续 4 个 `float32` 的局部连续性。
+
+因此，层次化 swizzle 解决 global-to-shared 写入冲突的同时，也不会把原本沿 M/N-major 连续读取的 shared-to-register 路径变成典型 bank conflict。
 
 ## 小结
 
