@@ -60,7 +60,7 @@ def example_shape_2_2x2():
     display_layout(layout, flatten_hierarchical=True)
 ```
 
-注意 `cute-viz` 总是将最左下标当做块内下标，这对应了前面的第二种解读方式。
+注意 `cute-viz` 总是将最左下标当做块内下标，这对应了前面的第一种解读方式。
 
 **cute-viz** 对分层布局有两种画法（均通过 `display_layout` / `render_layout_svg` 的 `flatten_hierarchical` 控制）：
 
