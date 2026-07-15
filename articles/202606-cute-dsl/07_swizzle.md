@@ -43,7 +43,7 @@ $$
 
 这表示逻辑形状是 `(8, 8)`，步长是 `(8, 1)`，也就是最常见的按行连续存储。下面这张图展示了这个基础 layout 的编号方式。
 
-![The base `8x8` layout is a plain row-major mapping before any swizzle is applied.](img/07_swizzle_base_8x8.svg)
+![The base `8x8` layout is a plain row-major mapping before any swizzle is applied.](img/07_swizzle_base_8x8.jpg)
 
 ---
 
@@ -126,7 +126,7 @@ $$
 
 第一张图展示了 swizzle 之后的重排关系。可以把它理解成：原来连续落在同一列上的元素，被重新分散到不同列中。
 
-![The `Swizzle<3,0,3>` view shows how a regular `8x8` layout is remapped across columns.](img/07_swizzle_swizzled_8x8.svg)
+![The `Swizzle<3,0,3>` view shows how a regular `8x8` layout is remapped across columns.](img/07_swizzle_swizzled_8x8.jpg)
 
 从 shared memory 的角度看，这个例子最重要的直觉是：
 
@@ -271,7 +271,7 @@ $$
 
 这张图展示了尚未加入 swizzle 时的 `8x32` layout atom。
 
-![The outer `8x32` layout atom is the unswizzled shared-memory tile.](img/07_swizzle_layout_atom_outer_8x32.svg)
+![The outer `8x32` layout atom is the unswizzled shared-memory tile.](img/07_swizzle_layout_atom_outer_8x32.jpg)
 
 ---
 
@@ -461,7 +461,7 @@ $$
 
 把它叫作 `layout atom` 也很贴切。按照 CUTLASS 对 `SM90` 工具函数的说明，实际工程里常见的流程就是先选一个“紧凑的 SMEM layout atom”，再把它 tile 到更大的 MMA tile 或 pipeline stage 上 [5]。这一节里的 `S<2,3,3> o 0 o (8,32):(32,1)`，正是在手工演示这个 atom 长什么样。
 
-![The `8x32` layout atom after swizzle reflects a bank-conflict-aware shared-memory arrangement.](img/07_swizzle_layout_atom_8x32.svg)
+![The `8x32` layout atom after swizzle reflects a bank-conflict-aware shared-memory arrangement.](img/07_swizzle_layout_atom_8x32.jpg)
 
 ---
 
@@ -493,7 +493,7 @@ $$
 
 这张图展示了把 swizzled atom 扩展到 `128x32` 之后的整体布局。
 
-![The tiled `128x32` shared-memory layout is formed by repeating the swizzled atom over the target shape.](img/07_swizzle_layout_tiled_128x32.svg)
+![The tiled `128x32` shared-memory layout is formed by repeating the swizzled atom over the target shape.](img/07_swizzle_layout_tiled_128x32.jpg)
 
 ---
 

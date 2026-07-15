@@ -326,7 +326,7 @@ index = row * 8 + col
 
 `cute-viz` 图里的横纵坐标是逻辑坐标 `(row, col)`，格子里的数字是这个坐标映射到的线性 `index`：
 
-![The base `8x8` layout is a plain row-major mapping before any swizzle is applied.](img/07_swizzle_base_8x8.svg)
+![The base `8x8` layout is a plain row-major mapping before any swizzle is applied.](img/07_swizzle_base_8x8.jpg)
 
 这个 layout 按行访问没有冲突：一行的 `index = 0..7` 会落到 bank `0..7`。但按列访问会冲突：固定 `col` 时，`index = col, 8 + col, 16 + col, ...`，这些值对 `8` 取模都等于同一个 `col`。
 
@@ -346,7 +346,7 @@ index' = row * 8 + (col xor row)
 
 `cute-viz` 展示的就是 swizzle 后每个逻辑坐标对应的新 `index'`：
 
-![The `Swizzle<3,0,3>` view shows how a regular `8x8` layout is remapped across columns.](img/07_swizzle_swizzled_8x8.svg)
+![The `Swizzle<3,0,3>` view shows how a regular `8x8` layout is remapped across columns.](img/07_swizzle_swizzled_8x8.jpg)
 
 读图时重点看“同一列”的数字：例如 `col=0` 这一列从 `0,8,16,...` 变成 `0,9,18,...`，对 `8` 取模后会落到不同 bank。固定 `row` 时，`col xor row` 也是 `0..7` 的一个排列，所以行访问仍然覆盖 8 个不同 bank。换句话说，swizzle 没有改变逻辑坐标，也没有减少元素；它只是改变逻辑坐标到 shared-memory index 的映射，让原本集中到同一 bank 的列访问被打散。
 
@@ -469,7 +469,7 @@ bank = (major & 3) + 4 * (((major >> 2) & 7) xor k)
 
 这样固定 `major`、不同 `k` 会落到不同 bank 组，达到和 padding 类似的 bank skew 效果，但不增加 shared memory 占用。下图展示了 swizzle 后，坐标和实际索引（index，也常称 offset）的对应关系。
 
-![Flat swizzle applies `S<3,2,5>` directly on the full `128x8` shared tile.](img/07_sgemm_flat_swizzle_128x8.svg)
+![Flat swizzle applies `S<3,2,5>` directly on the full `128x8` shared tile.](img/07_sgemm_flat_swizzle_128x8.jpg)
 
 对一个 warp，flat swizzle 前后的 bank 分布如下。无 swizzle 时仍然是：
 
@@ -644,7 +644,7 @@ bank = (major & 3) + 4 * (((major >> 2) & 7) xor k)
 
 它和 flat `S<3,2,5>` 的目标相同：保留 4 个 FP32 的局部连续性，同时把 `k` 的 3 个 bit xor 到 bank-select bits 上。区别是物理 layout 不同。下图展示了 swizzle 后，坐标和实际索引（index，也常称 offset）的对应关系。
 
-![Hierarchy swizzle first applies `S<3,2,3>` on a `32x8` atom.](img/07_sgemm_hierarchy_swizzle_atom_32x8.svg)
+![Hierarchy swizzle first applies `S<3,2,3>` on a `32x8` atom.](img/07_sgemm_hierarchy_swizzle_atom_32x8.jpg)
 
 对一个 warp，hierarchy swizzle 前后的 bank 分布如下。无 swizzle 时：
 
