@@ -22,10 +22,10 @@ jobs:
         pip install git+https://github.com/drmingdrmer/md2zhihu.git@main
     - name: Install mermaid
       run: npm install @mermaid-js/mermaid-cli@10.2.2
-    - name: Install pandoc and graphviz
+    - name: Install pandoc, graphviz and imagemagick
       run: |
         sudo apt-get update
-        sudo apt-get install -y pandoc graphviz
+        sudo apt-get install -y pandoc graphviz imagemagick
     - name: Run md2zhihu
       run: |
         export PATH="$PWD/node_modules/.bin:$PATH"
